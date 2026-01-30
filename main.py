@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -164,6 +165,9 @@ async def alarm_checker(context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
     changed = False
 
+    now_hour = datetime.now().hour
+    is_night = 0 <= now_hour < 7   # 🌙 밤 12시~7시
+
     for a in alarms:
         p1 = get_price(a["ex_high"], a["coin"])
         p2 = get_price(a["ex_low"], a["coin"])
@@ -173,7 +177,10 @@ async def alarm_checker(context: ContextTypes.DEFAULT_TYPE):
 
         gap = p1 - p2
 
-        if gap >= a["diff"] and a["trigger_count"] < 5:
+        # 🌙 밤에는 기준 2배 적용
+        target_diff = a["diff"] * 2 if is_night else a["diff"]
+
+        if gap >= target_diff and a["trigger_count"] < 5:
             fee = (
                 p1 * FEE_RATE[a["ex_high"]] +
                 p2 * FEE_RATE[a["ex_low"]]
@@ -186,6 +193,7 @@ async def alarm_checker(context: ContextTypes.DEFAULT_TYPE):
                 f"{a['kr_high']}: {p1:,.0f}\n"
                 f"{a['kr_low']}: {p2:,.0f}\n"
                 f"차이: {gap:,.0f}\n"
+                f"기준: {target_diff:,.0f}\n"
                 f"수수료: {fee:,.0f}\n"
                 f"순이익: {net:,.0f}"
             )
@@ -193,12 +201,14 @@ async def alarm_checker(context: ContextTypes.DEFAULT_TYPE):
             a["trigger_count"] += 1
             changed = True
 
-        if gap < a["diff"] and a["trigger_count"] > 0:
+        # 차이 줄어들면 리셋 (스팸 방지)
+        if gap < target_diff and a["trigger_count"] > 0:
             a["trigger_count"] = 0
             changed = True
 
     if changed:
         save_alarms(alarms)
+
 
 #################################
 # 실행
@@ -219,3 +229,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
