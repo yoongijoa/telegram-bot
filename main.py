@@ -1,12 +1,14 @@
-import time
-import os
-from telegram import Bot
+from telegram.ext import Application, CommandHandler
 
-TOKEN = os.getenv("TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+TOKEN = "8410288468:AAEhGY-A-8Zu1iBR8zaKGKP4UTSxjRQSpWY"
 
-bot = Bot(token=TOKEN)
+async def start(update, context):
+    await update.message.reply_text("봇 정상 작동 중입니다 🚀")
 
-while True:
-    bot.send_message(chat_id=CHAT_ID, text="Railway 알람봇 정상 작동중 🚀")
-    time.sleep(60)
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
