@@ -135,7 +135,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set 업비트 빗썸 ETH 1000\n"
         "/list\n"
         "/delete 번호\n"
-        "/밤 → 밤모드 ON/OFF"
+        "/night → 밤모드 ON/OFF"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,7 +206,7 @@ async def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("set", set_alarm))
     app.add_handler(CommandHandler("list", list_alarm))
-    app.add_handler(CommandHandler("밤", night_mode))
+    app.add_handler(CommandHandler("night", night_mode))
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -224,3 +224,4 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
+
