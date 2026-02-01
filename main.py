@@ -15,7 +15,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 ALARM_FILE = "alarms.json"
 NIGHT_FILE = "night_mode.json"
 
-CHECK_INTERVAL = 15
+CHECK_INTERVAL = 5
 
 NIGHT_START = 23
 NIGHT_END = 7
@@ -247,3 +247,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
