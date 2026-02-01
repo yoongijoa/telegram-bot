@@ -4,7 +4,6 @@ import requests
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 #################################
 # 환경변수
@@ -12,11 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 TOKEN = os.getenv("BOT_TOKEN")
 ALARM_FILE = "alarms.json"
-CHECK_INTERVAL = 15   # 안정값
-
-#################################
-# 거래소 맵
-#################################
+CHECK_INTERVAL = 15
 
 EXCHANGE_MAP = {
     "업비트": "upbit",
@@ -24,6 +19,14 @@ EXCHANGE_MAP = {
     "코인원": "coinone",
     "코빗": "korbit",
     "고팍스": "gopax",
+}
+
+FEE_RATE = {
+    "upbit": 0.0005,
+    "bithumb": 0.0004,
+    "coinone": 0.0005,
+    "korbit": 0.0005,
+    "gopax": 0.0005,
 }
 
 #################################
@@ -46,84 +49,42 @@ def save_alarms(alarms):
         json.dump(alarms, f, ensure_ascii=False, indent=2)
 
 #################################
-# 가격 조회 (timeout 필수)
+# 가격 조회
 #################################
 
 def get_price(exchange, coin):
     try:
         if exchange == "upbit":
-            r = requests.get(
+            return float(requests.get(
                 f"https://api.upbit.com/v1/ticker?markets=KRW-{coin}",
                 timeout=3
-            ).json()
-            return float(r[0]["trade_price"])
+            ).json()[0]["trade_price"])
 
         if exchange == "bithumb":
-            r = requests.get(
+            return float(requests.get(
                 f"https://api.bithumb.com/public/ticker/{coin}_KRW",
                 timeout=3
-            ).json()
-            return float(r["data"]["closing_price"])
+            ).json()["data"]["closing_price"])
 
         if exchange == "coinone":
-            r = requests.get(
+            return float(requests.get(
                 f"https://api.coinone.co.kr/ticker/?currency={coin.lower()}",
                 timeout=3
-            ).json()
-            return float(r["last"])
+            ).json()["last"])
 
         if exchange == "korbit":
-            r = requests.get(
+            return float(requests.get(
                 f"https://api.korbit.co.kr/v1/ticker/detailed?currency_pair={coin.lower()}_krw",
                 timeout=3
-            ).json()
-            return float(r["last"])
+            ).json()["last"])
 
         if exchange == "gopax":
-            r = requests.get(
+            return float(requests.get(
                 f"https://api.gopax.co.kr/trading-pairs/{coin}-KRW/ticker",
                 timeout=3
-            ).json()
-            return float(r["price"])
+            ).json()["price"])
     except:
         return None
-
-#################################
-# 밤모드 판단
-#################################
-
-def is_night():
-    hour = datetime.now().hour
-    return hour >= 0 and hour < 7   # 00:00 ~ 07:00
-
-#################################
-# 알람 체크
-#################################
-
-async def check_alarms(app):
-    alarms = load_alarms()
-
-    for a in alarms:
-        high = get_price(a["ex_high"], a["coin"])
-        low = get_price(a["ex_low"], a["coin"])
-
-        if not high or not low:
-            continue
-
-        diff_now = high - low
-        target = a["diff"]
-
-        # 🌙 밤모드면 기준 2배
-        if a["night_mode"] and is_night():
-            target *= 2
-
-        if diff_now >= target:
-            msg = (
-                f"🚨 차익 기회!\n"
-                f"{a['kr_high']} → {a['kr_low']} {a['coin']}\n"
-                f"차이: {int(diff_now)}원"
-            )
-            await app.bot.send_message(a["chat_id"], msg)
 
 #################################
 # 명령어
@@ -135,7 +96,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set 업비트 빗썸 ETH 1000\n"
         "/list\n"
         "/delete 번호\n"
-        "/night → 밤모드 ON/OFF"
+        "/night  (밤모드 ON/OFF)"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,6 +126,7 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "kr_low": ex_low_kr,
         "coin": coin,
         "diff": diff,
+        "trigger_count": 0,
         "night_mode": False
     })
 
@@ -186,42 +148,109 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg)
 
+async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    alarms = load_alarms()
+    chat_id = update.effective_chat.id
+
+    try:
+        idx = int(context.args[0]) - 1
+        my = [a for a in alarms if a["chat_id"] == chat_id]
+        alarms.remove(my[idx])
+        save_alarms(alarms)
+        await update.message.reply_text("🗑 삭제 완료")
+    except:
+        await update.message.reply_text("❌ 번호 오류")
+
 async def night_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
+    chat_id = update.effective_chat.id
+    changed = False
 
     for a in alarms:
-        if a["chat_id"] == update.effective_chat.id:
+        if a["chat_id"] == chat_id:
             a["night_mode"] = not a["night_mode"]
+            changed = True
 
-    save_alarms(alarms)
-    await update.message.reply_text("🌙 밤모드 토글 완료")
+    if changed:
+        save_alarms(alarms)
+        await update.message.reply_text("🌙 밤모드 토글 완료")
+    else:
+        await update.message.reply_text("설정된 알람이 없습니다")
+
+#################################
+# 알람 체크
+#################################
+
+async def alarm_checker(context: ContextTypes.DEFAULT_TYPE):
+    alarms = load_alarms()
+    changed = False
+
+    now_hour = datetime.now().hour
+    is_night_time = 0 <= now_hour < 7
+
+    for a in alarms:
+        p1 = get_price(a["ex_high"], a["coin"])
+        p2 = get_price(a["ex_low"], a["coin"])
+
+        if not p1 or not p2:
+            continue
+
+        gap = p1 - p2
+
+        night_active = a["night_mode"] and is_night_time
+        target_diff = a["diff"] * 2 if night_active else a["diff"]
+
+        if gap >= target_diff and a["trigger_count"] < 5:
+            fee = (
+                p1 * FEE_RATE[a["ex_high"]] +
+                p2 * FEE_RATE[a["ex_low"]]
+            )
+            net = gap - fee
+
+            await context.bot.send_message(
+                a["chat_id"],
+                f"🚨 {a['coin']} 가격차 발생\n"
+                f"{a['kr_high']}: {p1:,.0f}\n"
+                f"{a['kr_low']}: {p2:,.0f}\n"
+                f"차이: {gap:,.0f}\n"
+                f"기준: {target_diff:,.0f}\n"
+                f"수수료: {fee:,.0f}\n"
+                f"순이익: {net:,.0f}"
+            )
+
+            a["trigger_count"] += 1
+            changed = True
+
+        if gap < target_diff and a["trigger_count"] > 0:
+            a["trigger_count"] = 0
+            changed = True
+
+    if changed:
+        save_alarms(alarms)
 
 #################################
 # 실행
 #################################
 
-async def main():
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("set", set_alarm))
     app.add_handler(CommandHandler("list", list_alarm))
+    app.add_handler(CommandHandler("delete", delete_alarm))
     app.add_handler(CommandHandler("night", night_mode))
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        check_alarms,
-        "interval",
-        seconds=CHECK_INTERVAL,
-        args=[app],
+    app.job_queue.run_repeating(
+        alarm_checker,
+        interval=CHECK_INTERVAL,
+        first=5,
         max_instances=1,
         coalesce=True
     )
-    scheduler.start()
 
-    await app.run_polling()
+    print("🚀 아비트라지 알람봇 실행중")
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-
+    main()
