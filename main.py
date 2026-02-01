@@ -144,4 +144,5 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "📌 내 알람\n"
     for i, a in enumerate(my):
         night = "🌙ON" if a["night_mode"] else "OFF"
-        msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원 |_]()_]()
+        msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원 | 밤모드:{night}\n"
+
