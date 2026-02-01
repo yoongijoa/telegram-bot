@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("BOT_TOKEN")
 ALARM_FILE = "alarms.json"
-CHECK_INTERVAL = 5
+CHECK_INTERVAL = 15
 
 EXCHANGE_MAP = {
     "업비트": "upbit",
@@ -145,4 +145,5 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, a in enumerate(my):
         night = "🌙ON" if a["night_mode"] else "OFF"
         msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원 | 밤모드:{night}\n"
+
 
