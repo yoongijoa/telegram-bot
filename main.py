@@ -1,7 +1,7 @@
 import os
 import json
 import requests
-from datetime import datetime
+import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -21,14 +21,6 @@ EXCHANGE_MAP = {
     "고팍스": "gopax",
 }
 
-FEE_RATE = {
-    "upbit": 0.0005,
-    "bithumb": 0.0004,
-    "coinone": 0.0005,
-    "korbit": 0.0005,
-    "gopax": 0.0005,
-}
-
 #################################
 # 알람 저장
 #################################
@@ -36,11 +28,7 @@ FEE_RATE = {
 def load_alarms():
     try:
         with open(ALARM_FILE, "r", encoding="utf-8") as f:
-            alarms = json.load(f)
-            for a in alarms:
-                a.setdefault("trigger_count", 0)
-                a.setdefault("night_mode", False)
-            return alarms
+            return json.load(f)
     except:
         return []
 
@@ -95,8 +83,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 사용법\n"
         "/set 업비트 빗썸 ETH 1000\n"
         "/list\n"
-        "/delete 번호\n"
-        "/night  (밤모드 ON/OFF)"
+        "/delete 번호"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,9 +112,7 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "kr_high": ex_high_kr,
         "kr_low": ex_low_kr,
         "coin": coin,
-        "diff": diff,
-        "trigger_count": 0,
-        "night_mode": False
+        "diff": diff
     })
 
     save_alarms(alarms)
@@ -143,94 +128,68 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📌 내 알람\n"
     for i, a in enumerate(my):
-        night = "🌙ON" if a["night_mode"] else "OFF"
-        msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원 | 밤:{night}\n"
+        msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원\n"
 
     await update.message.reply_text(msg)
 
 async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
-    chat_id = update.effective_chat.id
+    my = [a for a in alarms if a["chat_id"] == update.effective_chat.id]
 
-    try:
-        idx = int(context.args[0]) - 1
-        my = [a for a in alarms if a["chat_id"] == chat_id]
-        alarms.remove(my[idx])
-        save_alarms(alarms)
-        await update.message.reply_text("🗑 삭제 완료")
-    except:
-        await update.message.reply_text("❌ 번호 오류")
+    if not context.args:
+        return
 
-async def night_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    alarms = load_alarms()
-    chat_id = update.effective_chat.id
-    changed = False
+    idx = int(context.args[0]) - 1
+    if idx < 0 or idx >= len(my):
+        return
 
-    for a in alarms:
-        if a["chat_id"] == chat_id:
-            a["night_mode"] = not a["night_mode"]
-            changed = True
-
-    if changed:
-        save_alarms(alarms)
-        await update.message.reply_text("🌙 밤모드 토글 완료")
-    else:
-        await update.message.reply_text("설정된 알람이 없습니다")
+    alarms.remove(my[idx])
+    save_alarms(alarms)
+    await update.message.reply_text("🗑 삭제 완료")
 
 #################################
-# 알람 체크
+# 알람 체크 루프 (중복 방지)
 #################################
 
-async def alarm_checker(context: ContextTypes.DEFAULT_TYPE):
-    alarms = load_alarms()
-    changed = False
+checking = False
 
-    now_hour = datetime.now().hour
-    is_night_time = 0 <= now_hour < 7
+async def check_alarms(app):
+    global checking
+    if checking:
+        return
+
+    checking = True
+
+    alarms = load_alarms()
 
     for a in alarms:
-        p1 = get_price(a["ex_high"], a["coin"])
-        p2 = get_price(a["ex_low"], a["coin"])
+        high = get_price(a["ex_high"], a["coin"])
+        low = get_price(a["ex_low"], a["coin"])
 
-        if not p1 or not p2:
+        if not high or not low:
             continue
 
-        gap = p1 - p2
+        gap = high - low
 
-        night_active = a["night_mode"] and is_night_time
-        target_diff = a["diff"] * 2 if night_active else a["diff"]
+        if gap >= a["diff"]:
+            try:
+                await app.bot.send_message(
+                    chat_id=a["chat_id"],
+                    text=f"🚨 차익 발생!\n{a['kr_high']} {high:,.0f}원\n{a['kr_low']} {low:,.0f}원\n차이: {gap:,.0f}원"
+                )
+            except:
+                pass
 
-        if gap >= target_diff and a["trigger_count"] < 5:
-            fee = (
-                p1 * FEE_RATE[a["ex_high"]] +
-                p2 * FEE_RATE[a["ex_low"]]
-            )
-            net = gap - fee
-
-            await context.bot.send_message(
-                a["chat_id"],
-                f"🚨 {a['coin']} 가격차 발생\n"
-                f"{a['kr_high']}: {p1:,.0f}\n"
-                f"{a['kr_low']}: {p2:,.0f}\n"
-                f"차이: {gap:,.0f}\n"
-                f"기준: {target_diff:,.0f}\n"
-                f"수수료: {fee:,.0f}\n"
-                f"순이익: {net:,.0f}"
-            )
-
-            a["trigger_count"] += 1
-            changed = True
-
-        if gap < target_diff and a["trigger_count"] > 0:
-            a["trigger_count"] = 0
-            changed = True
-
-    if changed:
-        save_alarms(alarms)
+    checking = False
 
 #################################
-# 실행
+# 메인
 #################################
+
+async def alarm_loop(app):
+    while True:
+        await check_alarms(app)
+        await asyncio.sleep(CHECK_INTERVAL)
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -239,17 +198,11 @@ def main():
     app.add_handler(CommandHandler("set", set_alarm))
     app.add_handler(CommandHandler("list", list_alarm))
     app.add_handler(CommandHandler("delete", delete_alarm))
-    app.add_handler(CommandHandler("night", night_mode))
 
-    app.job_queue.run_repeating(
-        alarm_checker,
-        interval=CHECK_INTERVAL,
-        first=5,
-        max_instances=1,
-        coalesce=True
-    )
+    async def start(app):
+        asyncio.create_task(alarm_loop(app))
 
-    print("🚀 아비트라지 알람봇 실행중")
+    app.post_init = start
     app.run_polling()
 
 if __name__ == "__main__":
