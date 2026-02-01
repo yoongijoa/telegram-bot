@@ -29,8 +29,8 @@ EXCHANGE_MAP = {
 }
 
 FEE_RATE = {
-    "upbit": 0.0005,   # 0.05%
-    "bithumb": 0.0004 # 0.04%
+    "upbit": 0.0005,
+    "bithumb": 0.0004
 }
 
 #################################
@@ -97,7 +97,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set 업비트 빗썸 ETH 1000\n"
         "/list\n"
         "/delete 번호\n"
-        "/night  밤모드 ON/OFF"
+        "/night  밤모드 ON/OFF\n\n"
+        "※ 같은 조건으로 다시 입력하면 자동 수정됨"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,8 +120,21 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     alarms = load_alarms()
+    cid = update.effective_chat.id
+
+    # ✅ 기존 같은 알람 있으면 제거 (자동 덮어쓰기 핵심)
+    alarms = [
+        a for a in alarms
+        if not (
+            a["chat_id"] == cid and
+            a["ex_high"] == EXCHANGE_MAP[ex_high_kr] and
+            a["ex_low"] == EXCHANGE_MAP[ex_low_kr] and
+            a["coin"] == coin
+        )
+    ]
+
     alarms.append({
-        "chat_id": update.effective_chat.id,
+        "chat_id": cid,
         "ex_high": EXCHANGE_MAP[ex_high_kr],
         "ex_low": EXCHANGE_MAP[ex_low_kr],
         "kr_high": ex_high_kr,
@@ -130,7 +144,8 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
 
     save_alarms(alarms)
-    await update.message.reply_text("✅ 알람 등록 완료")
+
+    await update.message.reply_text("✅ 기존 알람 자동 수정 완료")
 
 async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
@@ -194,8 +209,8 @@ async def check_alarms(app):
             continue
 
         gap = high - low
-
         threshold = a["diff"]
+
         if night_on and now_night:
             threshold *= 2
 
@@ -247,4 +262,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
