@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import asyncio
+from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -12,6 +13,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 TOKEN = os.getenv("BOT_TOKEN")
 ALARM_FILE = "alarms.json"
 CHECK_INTERVAL = 15
+
+NIGHT_START = 23   # 밤 시작 시간
+NIGHT_END = 7      # 밤 끝 시간
 
 EXCHANGE_MAP = {
     "업비트": "upbit",
@@ -35,6 +39,16 @@ def load_alarms():
 def save_alarms(alarms):
     with open(ALARM_FILE, "w", encoding="utf-8") as f:
         json.dump(alarms, f, ensure_ascii=False, indent=2)
+
+#################################
+# 밤모드 체크
+#################################
+
+def is_night():
+    now = datetime.now().hour
+    if NIGHT_START <= now or now < NIGHT_END:
+        return True
+    return False
 
 #################################
 # 가격 조회
@@ -83,7 +97,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 사용법\n"
         "/set 업비트 빗썸 ETH 1000\n"
         "/list\n"
-        "/delete 번호"
+        "/delete 번호\n"
+        "/night → 밤모드 ON/OFF"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -107,103 +122,4 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
     alarms.append({
         "chat_id": update.effective_chat.id,
-        "ex_high": EXCHANGE_MAP[ex_high_kr],
-        "ex_low": EXCHANGE_MAP[ex_low_kr],
-        "kr_high": ex_high_kr,
-        "kr_low": ex_low_kr,
-        "coin": coin,
-        "diff": diff
-    })
-
-    save_alarms(alarms)
-    await update.message.reply_text("✅ 알람 등록 완료")
-
-async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    alarms = load_alarms()
-    my = [a for a in alarms if a["chat_id"] == update.effective_chat.id]
-
-    if not my:
-        await update.message.reply_text("알람 없음")
-        return
-
-    msg = "📌 내 알람\n"
-    for i, a in enumerate(my):
-        msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원\n"
-
-    await update.message.reply_text(msg)
-
-async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    alarms = load_alarms()
-    my = [a for a in alarms if a["chat_id"] == update.effective_chat.id]
-
-    if not context.args:
-        return
-
-    idx = int(context.args[0]) - 1
-    if idx < 0 or idx >= len(my):
-        return
-
-    alarms.remove(my[idx])
-    save_alarms(alarms)
-    await update.message.reply_text("🗑 삭제 완료")
-
-#################################
-# 알람 체크 루프 (중복 방지)
-#################################
-
-checking = False
-
-async def check_alarms(app):
-    global checking
-    if checking:
-        return
-
-    checking = True
-
-    alarms = load_alarms()
-
-    for a in alarms:
-        high = get_price(a["ex_high"], a["coin"])
-        low = get_price(a["ex_low"], a["coin"])
-
-        if not high or not low:
-            continue
-
-        gap = high - low
-
-        if gap >= a["diff"]:
-            try:
-                await app.bot.send_message(
-                    chat_id=a["chat_id"],
-                    text=f"🚨 차익 발생!\n{a['kr_high']} {high:,.0f}원\n{a['kr_low']} {low:,.0f}원\n차이: {gap:,.0f}원"
-                )
-            except:
-                pass
-
-    checking = False
-
-#################################
-# 메인
-#################################
-
-async def alarm_loop(app):
-    while True:
-        await check_alarms(app)
-        await asyncio.sleep(CHECK_INTERVAL)
-
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("set", set_alarm))
-    app.add_handler(CommandHandler("list", list_alarm))
-    app.add_handler(CommandHandler("delete", delete_alarm))
-
-    async def start(app):
-        asyncio.create_task(alarm_loop(app))
-
-    app.post_init = start
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+        "ex_high": EX_
