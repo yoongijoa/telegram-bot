@@ -122,4 +122,126 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
     alarms.append({
         "chat_id": update.effective_chat.id,
-        "ex_high": EX_
+        "ex_high": EXCHANGE_MAP[ex_high_kr],
+        "ex_low": EXCHANGE_MAP[ex_low_kr],
+        "kr_high": ex_high_kr,
+        "kr_low": ex_low_kr,
+        "coin": coin,
+        "diff": diff,
+        "night_mode": False
+    })
+
+    save_alarms(alarms)
+    await update.message.reply_text("✅ 알람 등록 완료")
+
+async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    alarms = load_alarms()
+    my = [a for a in alarms if a["chat_id"] == update.effective_chat.id]
+
+    if not my:
+        await update.message.reply_text("알람 없음")
+        return
+
+    msg = "📌 내 알람\n"
+    for i, a in enumerate(my):
+        night = "🌙ON" if a.get("night_mode") else "OFF"
+        msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원 | 밤모드:{night}\n"
+
+    await update.message.reply_text(msg)
+
+async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    alarms = load_alarms()
+    my = [a for a in alarms if a["chat_id"] == update.effective_chat.id]
+
+    if not context.args:
+        return
+
+    idx = int(context.args[0]) - 1
+    if idx < 0 or idx >= len(my):
+        return
+
+    alarms.remove(my[idx])
+    save_alarms(alarms)
+    await update.message.reply_text("🗑 삭제 완료")
+
+async def night_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    alarms = load_alarms()
+    changed = False
+
+    for a in alarms:
+        if a["chat_id"] == update.effective_chat.id:
+            a["night_mode"] = not a.get("night_mode", False)
+            changed = True
+
+    save_alarms(alarms)
+
+    if changed:
+        await update.message.reply_text("🌙 밤모드 토글 완료")
+    else:
+        await update.message.reply_text("알람 없음")
+
+#################################
+# 알람 체크
+#################################
+
+checking = False
+
+async def check_alarms(app):
+    global checking
+    if checking:
+        return
+
+    checking = True
+
+    alarms = load_alarms()
+    night = is_night()
+
+    for a in alarms:
+        if a.get("night_mode") and night:
+            continue
+
+        high = get_price(a["ex_high"], a["coin"])
+        low = get_price(a["ex_low"], a["coin"])
+
+        if not high or not low:
+            continue
+
+        gap = high - low
+
+        if gap >= a["diff"]:
+            try:
+                await app.bot.send_message(
+                    chat_id=a["chat_id"],
+                    text=f"🚨 차익 발생!\n{a['kr_high']} {high:,.0f}원\n{a['kr_low']} {low:,.0f}원\n차이: {gap:,.0f}원"
+                )
+            except:
+                pass
+
+    checking = False
+
+#################################
+# 루프
+#################################
+
+async def alarm_loop(app):
+    while True:
+        await check_alarms(app)
+        await asyncio.sleep(CHECK_INTERVAL)
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("set", set_alarm))
+    app.add_handler(CommandHandler("list", list_alarm))
+    app.add_handler(CommandHandler("delete", delete_alarm))
+    app.add_handler(CommandHandler("night", night_toggle))
+
+    async def start(app):
+        asyncio.create_task(alarm_loop(app))
+
+    app.post_init = start
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
