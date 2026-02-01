@@ -223,16 +223,17 @@ async def check_alarms(app):
         net_profit = gap - buy_fee - sell_fee
 
         try:
-            await app.bot.send_message(
-                chat_id=a["chat_id"],
-                text=(
-                    f"🚨 차익 발생!\n"
-                    f"{a['kr_high']} : {high:,.0f}원\n"
-                    f"{a['kr_low']} : {low:,.0f}원\n"
-                    f"차이 : {gap:,.0f}원\n"
-                    f"💸 수수료 제외 순이익 : {net_profit:,.0f}원"
-                )
-            )
+           await app.bot.send_message(
+    chat_id=a["chat_id"],
+    text=(
+        f"🚨 차익 발생! [{a['coin']}]\n"
+        f"{a['kr_high']} : {high:,.0f}원\n"
+        f"{a['kr_low']} : {low:,.0f}원\n"
+        f"📈 가격차 : {gap:,.0f}원\n"
+        f"💸 수수료 제외 순이익 : {net_profit:,.0f}원"
+    )
+)
+
         except:
             pass
 
@@ -262,3 +263,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
