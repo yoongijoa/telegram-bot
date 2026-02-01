@@ -11,11 +11,14 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 #################################
 
 TOKEN = os.getenv("BOT_TOKEN")
+
 ALARM_FILE = "alarms.json"
+NIGHT_FILE = "night_mode.json"
+
 CHECK_INTERVAL = 15
 
-NIGHT_START = 23   # 밤 시작 시간
-NIGHT_END = 7      # 밤 끝 시간
+NIGHT_START = 23
+NIGHT_END = 7
 
 EXCHANGE_MAP = {
     "업비트": "upbit",
@@ -25,8 +28,13 @@ EXCHANGE_MAP = {
     "고팍스": "gopax",
 }
 
+FEE_RATE = {
+    "upbit": 0.0005,   # 0.05%
+    "bithumb": 0.0004 # 0.04%
+}
+
 #################################
-# 알람 저장
+# 저장
 #################################
 
 def load_alarms():
@@ -36,19 +44,28 @@ def load_alarms():
     except:
         return []
 
-def save_alarms(alarms):
+def save_alarms(data):
     with open(ALARM_FILE, "w", encoding="utf-8") as f:
-        json.dump(alarms, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_night():
+    try:
+        with open(NIGHT_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_night(data):
+    with open(NIGHT_FILE, "w") as f:
+        json.dump(data, f)
 
 #################################
-# 밤모드 체크
+# 밤 시간 체크
 #################################
 
-def is_night():
-    now = datetime.now().hour
-    if NIGHT_START <= now or now < NIGHT_END:
-        return True
-    return False
+def is_night_time():
+    h = datetime.now().hour
+    return h >= NIGHT_START or h < NIGHT_END
 
 #################################
 # 가격 조회
@@ -67,24 +84,6 @@ def get_price(exchange, coin):
                 f"https://api.bithumb.com/public/ticker/{coin}_KRW",
                 timeout=3
             ).json()["data"]["closing_price"])
-
-        if exchange == "coinone":
-            return float(requests.get(
-                f"https://api.coinone.co.kr/ticker/?currency={coin.lower()}",
-                timeout=3
-            ).json()["last"])
-
-        if exchange == "korbit":
-            return float(requests.get(
-                f"https://api.korbit.co.kr/v1/ticker/detailed?currency_pair={coin.lower()}_krw",
-                timeout=3
-            ).json()["last"])
-
-        if exchange == "gopax":
-            return float(requests.get(
-                f"https://api.gopax.co.kr/trading-pairs/{coin}-KRW/ticker",
-                timeout=3
-            ).json()["price"])
     except:
         return None
 
@@ -98,7 +97,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set 업비트 빗썸 ETH 1000\n"
         "/list\n"
         "/delete 번호\n"
-        "/night → 밤모드 ON/OFF"
+        "/night  밤모드 ON/OFF"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -127,8 +126,7 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "kr_high": ex_high_kr,
         "kr_low": ex_low_kr,
         "coin": coin,
-        "diff": diff,
-        "night_mode": False
+        "diff": diff
     })
 
     save_alarms(alarms)
@@ -138,14 +136,16 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
     my = [a for a in alarms if a["chat_id"] == update.effective_chat.id]
 
+    night = load_night().get(str(update.effective_chat.id), False)
+    night_txt = "🌙ON" if night else "OFF"
+
     if not my:
         await update.message.reply_text("알람 없음")
         return
 
-    msg = "📌 내 알람\n"
+    msg = f"📌 내 알람 (밤모드:{night_txt})\n"
     for i, a in enumerate(my):
-        night = "🌙ON" if a.get("night_mode") else "OFF"
-        msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원 | 밤모드:{night}\n"
+        msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원\n"
 
     await update.message.reply_text(msg)
 
@@ -165,40 +165,27 @@ async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🗑 삭제 완료")
 
 async def night_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    alarms = load_alarms()
-    changed = False
+    data = load_night()
+    cid = str(update.effective_chat.id)
 
-    for a in alarms:
-        if a["chat_id"] == update.effective_chat.id:
-            a["night_mode"] = not a.get("night_mode", False)
-            changed = True
+    data[cid] = not data.get(cid, False)
+    save_night(data)
 
-    save_alarms(alarms)
-
-    if changed:
-        await update.message.reply_text("🌙 밤모드 토글 완료")
-    else:
-        await update.message.reply_text("알람 없음")
+    state = "🌙 ON" if data[cid] else "☀️ OFF"
+    await update.message.reply_text(f"밤모드 {state}")
 
 #################################
 # 알람 체크
 #################################
 
-checking = False
-
 async def check_alarms(app):
-    global checking
-    if checking:
-        return
-
-    checking = True
-
     alarms = load_alarms()
-    night = is_night()
+    night_data = load_night()
+    now_night = is_night_time()
 
     for a in alarms:
-        if a.get("night_mode") and night:
-            continue
+        chat_id = str(a["chat_id"])
+        night_on = night_data.get(chat_id, False)
 
         high = get_price(a["ex_high"], a["coin"])
         low = get_price(a["ex_low"], a["coin"])
@@ -208,16 +195,31 @@ async def check_alarms(app):
 
         gap = high - low
 
-        if gap >= a["diff"]:
-            try:
-                await app.bot.send_message(
-                    chat_id=a["chat_id"],
-                    text=f"🚨 차익 발생!\n{a['kr_high']} {high:,.0f}원\n{a['kr_low']} {low:,.0f}원\n차이: {gap:,.0f}원"
-                )
-            except:
-                pass
+        threshold = a["diff"]
+        if night_on and now_night:
+            threshold *= 2
 
-    checking = False
+        if gap < threshold:
+            continue
+
+        buy_fee = low * FEE_RATE.get(a["ex_low"], 0)
+        sell_fee = high * FEE_RATE.get(a["ex_high"], 0)
+
+        net_profit = gap - buy_fee - sell_fee
+
+        try:
+            await app.bot.send_message(
+                chat_id=a["chat_id"],
+                text=(
+                    f"🚨 차익 발생!\n"
+                    f"{a['kr_high']} : {high:,.0f}원\n"
+                    f"{a['kr_low']} : {low:,.0f}원\n"
+                    f"차이 : {gap:,.0f}원\n"
+                    f"💸 수수료 제외 순이익 : {net_profit:,.0f}원"
+                )
+            )
+        except:
+            pass
 
 #################################
 # 루프
