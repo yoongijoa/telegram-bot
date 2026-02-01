@@ -57,31 +57,31 @@ def get_price(exchange, coin):
         if exchange == "upbit":
             return float(requests.get(
                 f"https://api.upbit.com/v1/ticker?markets=KRW-{coin}",
-                timeout=5
+                timeout=3
             ).json()[0]["trade_price"])
 
         if exchange == "bithumb":
             return float(requests.get(
                 f"https://api.bithumb.com/public/ticker/{coin}_KRW",
-                timeout=5
+                timeout=3
             ).json()["data"]["closing_price"])
 
         if exchange == "coinone":
             return float(requests.get(
                 f"https://api.coinone.co.kr/ticker/?currency={coin.lower()}",
-                timeout=5
+                timeout=3
             ).json()["last"])
 
         if exchange == "korbit":
             return float(requests.get(
                 f"https://api.korbit.co.kr/v1/ticker/detailed?currency_pair={coin.lower()}_krw",
-                timeout=5
+                timeout=3
             ).json()["last"])
 
         if exchange == "gopax":
             return float(requests.get(
                 f"https://api.gopax.co.kr/trading-pairs/{coin}-KRW/ticker",
-                timeout=5
+                timeout=3
             ).json()["price"])
     except:
         return None
@@ -145,5 +145,6 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, a in enumerate(my):
         night = "🌙ON" if a["night_mode"] else "OFF"
         msg += f"{i+1}. {a['kr_high']} → {a['kr_low']} {a['coin']} {a['diff']}원 | 밤모드:{night}\n"
+
 
 
