@@ -50,14 +50,14 @@ def save_alarms(data):
 
 def load_night():
     try:
-        with open(NIGHT_FILE, "r") as f:
+        with open(NIGHT_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
         return {}
 
 def save_night(data):
-    with open(NIGHT_FILE, "w") as f:
-        json.dump(data, f)
+    with open(NIGHT_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 #################################
 # 밤 시간 체크
@@ -98,7 +98,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/list\n"
         "/delete 번호\n"
         "/night  밤모드 ON/OFF\n\n"
-        "※ 같은 조건으로 다시 입력하면 자동 수정됨"
+        "※ 같은 조건 입력 시 자동 수정"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,7 +122,6 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
     cid = update.effective_chat.id
 
-    # ✅ 기존 같은 알람 있으면 제거 (자동 덮어쓰기 핵심)
     alarms = [
         a for a in alarms
         if not (
@@ -144,14 +143,15 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
 
     save_alarms(alarms)
-
-    await update.message.reply_text("✅ 기존 알람 자동 수정 완료")
+    await update.message.reply_text("✅ 알람 저장 완료")
 
 async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
-    my = [a for a in alarms if a["chat_id"] == update.effective_chat.id]
+    cid = update.effective_chat.id
 
-    night = load_night().get(str(update.effective_chat.id), False)
+    my = [a for a in alarms if a["chat_id"] == cid]
+
+    night = load_night().get(str(cid), False)
     night_txt = "🌙ON" if night else "OFF"
 
     if not my:
@@ -166,17 +166,24 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
-    my = [a for a in alarms if a["chat_id"] == update.effective_chat.id]
+    cid = update.effective_chat.id
+
+    my = [a for a in alarms if a["chat_id"] == cid]
 
     if not context.args:
         return
 
-    idx = int(context.args[0]) - 1
+    try:
+        idx = int(context.args[0]) - 1
+    except:
+        return
+
     if idx < 0 or idx >= len(my):
         return
 
     alarms.remove(my[idx])
     save_alarms(alarms)
+
     await update.message.reply_text("🗑 삭제 완료")
 
 async def night_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -199,18 +206,19 @@ async def check_alarms(app):
     now_night = is_night_time()
 
     for a in alarms:
-        chat_id = str(a["chat_id"])
-        night_on = night_data.get(chat_id, False)
+        cid = str(a["chat_id"])
+        night_on = night_data.get(cid, False)
 
         high = get_price(a["ex_high"], a["coin"])
         low = get_price(a["ex_low"], a["coin"])
 
-        if not high or not low:
+        if high is None or low is None:
             continue
 
         gap = high - low
         threshold = a["diff"]
 
+        # 🌙 밤모드면 2배 적용
         if night_on and now_night:
             threshold *= 2
 
@@ -223,17 +231,16 @@ async def check_alarms(app):
         net_profit = gap - buy_fee - sell_fee
 
         try:
-           await app.bot.send_message(
-    chat_id=a["chat_id"],
-    text=(
-        f"🚨 차익 발생! [{a['coin']}]\n"
-        f"{a['kr_high']} : {high:,.0f}원\n"
-        f"{a['kr_low']} : {low:,.0f}원\n"
-        f"📈 가격차 : {gap:,.0f}원\n"
-        f"💸 수수료 제외 순이익 : {net_profit:,.0f}원"
-    )
-)
-
+            await app.bot.send_message(
+                chat_id=a["chat_id"],
+                text=(
+                    f"🚨 차익 발생! [{a['coin']}]\n"
+                    f"{a['kr_high']} : {high:,.0f}원\n"
+                    f"{a['kr_low']} : {low:,.0f}원\n"
+                    f"📈 가격차 : {gap:,.0f}원\n"
+                    f"💸 수수료 제외 순이익 : {net_profit:,.0f}원"
+                )
+            )
         except:
             pass
 
@@ -263,4 +270,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
