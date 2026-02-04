@@ -186,4 +186,95 @@ async def night_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_night()
     cid = str(update.effective_chat.id)
 
-    data[cid] = not data.get(cid, F
+    data[cid] = not data.get(cid, False)
+    save_night(data)
+
+    await update.message.reply_text(f"밤모드 {'ON' if data[cid] else 'OFF'}")
+
+#################################
+# 알람 체크 (5회 제한 + 신고점 방식)
+#################################
+
+async def check_alarms(app):
+    alarms = load_alarms()
+    night_data = load_night()
+    now_night = is_night_time()
+
+    for a in alarms:
+        key = f"{a['chat_id']}_{a['coin']}_{a['ex_high']}_{a['ex_low']}"
+        state = ALERT_STATE.get(key, {"count": 0, "max_gap": 0})
+
+        high = get_price(a["ex_high"], a["coin"])
+        low = get_price(a["ex_low"], a["coin"])
+
+        if high is None or low is None:
+            continue
+
+        gap = high - low
+        threshold = a["diff"]
+
+        if night_data.get(str(a["chat_id"]), False) and now_night:
+            threshold *= 2
+
+        # 기준 미달 → 리셋
+        if gap < threshold:
+            ALERT_STATE[key] = {"count": 0, "max_gap": 0}
+            continue
+
+        send = False
+
+        if state["count"] < 5:
+            send = True
+            state["count"] += 1
+            state["max_gap"] = max(state["max_gap"], gap)
+        else:
+            if gap > state["max_gap"]:
+                send = True
+                state["max_gap"] = gap
+
+        ALERT_STATE[key] = state
+
+        if not send:
+            continue
+
+        buy_fee = low * FEE_RATE.get(a["ex_low"], 0)
+        sell_fee = high * FEE_RATE.get(a["ex_high"], 0)
+        net_profit = gap - buy_fee - sell_fee
+
+        await app.bot.send_message(
+            chat_id=a["chat_id"],
+            text=(
+                f"🚨 차익 발생 [{a['coin']}]\n"
+                f"{a['kr_high']} : {high:,.0f}원\n"
+                f"{a['kr_low']} : {low:,.0f}원\n"
+                f"📈 가격차 : {gap:,.0f}원\n"
+                f"💸 순이익 : {net_profit:,.0f}원"
+            )
+        )
+
+#################################
+# 루프
+#################################
+
+async def alarm_loop(app):
+    while True:
+        await check_alarms(app)
+        await asyncio.sleep(CHECK_INTERVAL)
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("set", set_alarm))
+    app.add_handler(CommandHandler("list", list_alarm))
+    app.add_handler(CommandHandler("delete", delete_alarm))
+    app.add_handler(CommandHandler("night", night_toggle))
+
+    async def start(app):
+        asyncio.create_task(alarm_loop(app))
+
+    app.post_init = start
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
