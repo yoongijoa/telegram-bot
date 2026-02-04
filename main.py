@@ -2,7 +2,7 @@ import os
 import json
 import requests
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -60,11 +60,12 @@ def save_night(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 #################################
-# 밤 시간 체크
+# 🇰🇷 한국시간 기준 밤 체크
 #################################
 
 def is_night_time():
-    h = datetime.now().hour
+    kst = datetime.utcnow() + timedelta(hours=9)
+    h = kst.hour
     return h >= NIGHT_START or h < NIGHT_END
 
 #################################
@@ -218,7 +219,7 @@ async def check_alarms(app):
         gap = high - low
         threshold = a["diff"]
 
-        # 🌙 밤모드면 2배 적용
+        # 🌙 밤모드 + 밤시간이면 2배
         if night_on and now_night:
             threshold *= 2
 
