@@ -33,10 +33,6 @@ FEE_RATE = {
     "bithumb": 0.0004
 }
 
-#################################
-# 🔔 알람 상태 저장 (무한알람 방지)
-#################################
-
 ALERT_STATE = {}
 
 #################################
@@ -95,6 +91,44 @@ def get_price(exchange, coin):
         return None
 
 #################################
+# 📊 업비트 vs 빗썸 전체 조회
+#################################
+
+def get_upbit_all():
+    try:
+        markets = requests.get(
+            "https://api.upbit.com/v1/market/all",
+            timeout=3
+        ).json()
+
+        krw = [m['market'] for m in markets if m['market'].startswith("KRW-")]
+
+        tickers = requests.get(
+            "https://api.upbit.com/v1/ticker",
+            params={"markets": ",".join(krw)},
+            timeout=5
+        ).json()
+
+        return {d['market'].replace("KRW-", ""): d['trade_price'] for d in tickers}
+    except:
+        return {}
+
+def get_bithumb_all():
+    try:
+        data = requests.get(
+            "https://api.bithumb.com/public/ticker/ALL_KRW",
+            timeout=5
+        ).json()['data']
+
+        prices = {}
+        for coin in data:
+            if coin != "date":
+                prices[coin] = float(data[coin]['closing_price'])
+        return prices
+    except:
+        return {}
+
+#################################
 # 명령어
 #################################
 
@@ -104,8 +138,49 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set 업비트 빗썸 ETH 1000\n"
         "/list\n"
         "/delete 번호\n"
-        "/night 밤모드 ON/OFF"
+        "/night 밤모드 ON/OFF\n"
+        "/gap 0.5 → 업비트↔빗썸 0.5% 이상 코인 조회"
     )
+
+async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("사용법: /gap 0.5")
+        return
+
+    try:
+        threshold = float(context.args[0])
+    except:
+        await update.message.reply_text("숫자만 입력해줘. 예: /gap 0.5")
+        return
+
+    await update.message.reply_text("📊 전체 코인 비교중...")
+
+    upbit = get_upbit_all()
+    bithumb = get_bithumb_all()
+
+    if not upbit or not bithumb:
+        await update.message.reply_text("가격 조회 실패")
+        return
+
+    results = []
+
+    for coin in upbit:
+        if coin in bithumb:
+            gap = (upbit[coin] - bithumb[coin]) / bithumb[coin] * 100
+            if abs(gap) >= threshold:
+                results.append((coin, round(gap, 3)))
+
+    if not results:
+        await update.message.reply_text("조건 만족 코인 없음")
+        return
+
+    results.sort(key=lambda x: abs(x[1]), reverse=True)
+
+    msg = "📊 업비트 ↔ 빗썸 괴리율\n"
+    for coin, g in results[:20]:
+        msg += f"{coin} : {g}%\n"
+
+    await update.message.reply_text(msg)
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 4:
@@ -152,7 +227,6 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
     cid = update.effective_chat.id
-
     my = [a for a in alarms if a["chat_id"] == cid]
     night = load_night().get(str(cid), False)
 
@@ -185,14 +259,12 @@ async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def night_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_night()
     cid = str(update.effective_chat.id)
-
     data[cid] = not data.get(cid, False)
     save_night(data)
-
     await update.message.reply_text(f"밤모드 {'ON' if data[cid] else 'OFF'}")
 
 #################################
-# 알람 체크 (5회 제한 + 신고점 방식)
+# 알람 체크 루프
 #################################
 
 async def check_alarms(app):
@@ -216,7 +288,6 @@ async def check_alarms(app):
         if night_data.get(str(a["chat_id"]), False) and now_night:
             threshold *= 2
 
-        # 기준 미달 → 리셋
         if gap < threshold:
             ALERT_STATE[key] = {"count": 0, "max_gap": 0}
             continue
@@ -252,10 +323,6 @@ async def check_alarms(app):
             )
         )
 
-#################################
-# 루프
-#################################
-
 async def alarm_loop(app):
     while True:
         await check_alarms(app)
@@ -269,6 +336,7 @@ def main():
     app.add_handler(CommandHandler("list", list_alarm))
     app.add_handler(CommandHandler("delete", delete_alarm))
     app.add_handler(CommandHandler("night", night_toggle))
+    app.add_handler(CommandHandler("gap", gap_cmd))
 
     async def start(app):
         asyncio.create_task(alarm_loop(app))
