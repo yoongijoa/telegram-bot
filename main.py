@@ -68,7 +68,7 @@ def is_night_time():
     return h >= NIGHT_START or h < NIGHT_END
 
 #################################
-# 안전한 가격 조회
+# 안전한 가격 조회 (0원 차단 + status 체크)
 #################################
 
 def get_price(exchange, coin):
@@ -89,8 +89,10 @@ def get_price(exchange, coin):
                 timeout=3
             )
             data = r.json()
+
             if data.get("status") != "0000":
                 return None
+
             price = float(data["data"]["closing_price"])
 
         else:
@@ -105,7 +107,7 @@ def get_price(exchange, coin):
         return None
 
 #################################
-# 📊 전체 코인 조회
+# 📊 전체 코인 조회 (gap용)
 #################################
 
 def get_upbit_all():
@@ -141,37 +143,24 @@ def get_bithumb_all():
             timeout=5
         )
         data = r.json()
+
         if data.get("status") != "0000":
             return {}
+
         raw = data['data']
         prices = {}
+
         for coin in raw:
             if coin == "date":
                 continue
+
             price = float(raw[coin]['closing_price'])
+
             if price > 0:
                 prices[coin] = price
+
         return prices
-    except:
-        return {}
 
-#################################
-# 🔥 업비트 지갑 상태 조회
-#################################
-
-def get_upbit_wallet_status():
-    try:
-        r = requests.get(
-            "https://api.upbit.com/v1/status/wallet",
-            timeout=3
-        )
-        data = r.json()
-        result = {}
-        for d in data:
-            currency = d.get("currency")
-            state = d.get("wallet_state")
-            result[currency] = state
-        return result
     except:
         return {}
 
@@ -196,9 +185,11 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ex_high_kr, ex_low_kr, coin, diff = context.args
     coin = coin.upper()
+
     if ex_high_kr not in EXCHANGE_MAP or ex_low_kr not in EXCHANGE_MAP:
         await update.message.reply_text("거래소 이름 오류")
         return
+
     try:
         diff = float(diff)
     except:
@@ -207,6 +198,7 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     alarms = load_alarms()
     cid = update.effective_chat.id
+
     alarms.append({
         "chat_id": cid,
         "ex_high": EXCHANGE_MAP[ex_high_kr],
@@ -216,6 +208,7 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "coin": coin,
         "diff": diff
     })
+
     save_alarms(alarms)
     await update.message.reply_text("✅ 알람 저장 완료")
 
@@ -223,39 +216,50 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
     cid = update.effective_chat.id
     my = [a for a in alarms if a["chat_id"] == cid]
+
     if not my:
         await update.message.reply_text("알람 없음")
         return
+
     night = load_night().get(str(cid), False)
+
     msg = f"📌 내 알람 (밤모드:{'ON' if night else 'OFF'})\n"
     for i, a in enumerate(my):
         msg += f"{i+1}. {a['kr_high']}→{a['kr_low']} {a['coin']} {a['diff']}원\n"
+
     await update.message.reply_text(msg)
 
 async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return
+
     alarms = load_alarms()
     cid = update.effective_chat.id
     my = [a for a in alarms if a["chat_id"] == cid]
+
     idx = int(context.args[0]) - 1
     if idx < 0 or idx >= len(my):
         return
+
     alarms.remove(my[idx])
     save_alarms(alarms)
+
     await update.message.reply_text("🗑 삭제 완료")
 
 async def night_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_night()
     cid = str(update.effective_chat.id)
+
     data[cid] = not data.get(cid, False)
     save_night(data)
+
     await update.message.reply_text(f"밤모드 {'ON' if data[cid] else 'OFF'}")
 
 async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("사용법: /gap 0.5")
         return
+
     try:
         threshold = float(context.args[0])
     except:
@@ -263,42 +267,31 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("📊 전체 코인 비교중...")
+
     upbit = get_upbit_all()
     bithumb = get_bithumb_all()
-    upbit_wallet = get_upbit_wallet_status()
 
     if not upbit or not bithumb:
         await update.message.reply_text("가격 조회 실패")
         return
 
     results = []
+
     for coin in upbit:
-        if coin not in bithumb or bithumb[coin] <= 0:
-            continue
-        gap = (upbit[coin] - bithumb[coin]) / bithumb[coin] * 100
-        if abs(gap) < threshold:
-            continue
-        wallet_state = upbit_wallet.get(coin, "unknown")
-        if wallet_state == "working":
-            wallet_text = "🟢 정상"
-        elif wallet_state == "withdraw_only":
-            wallet_text = "🟡 출금만"
-        elif wallet_state == "deposit_only":
-            wallet_text = "🟡 입금만"
-        elif wallet_state == "paused":
-            wallet_text = "🔴 입출금중단"
-        else:
-            wallet_text = "⚪ 확인불가"
-        results.append((coin, round(gap, 3), wallet_text))
+        if coin in bithumb and bithumb[coin] > 0:
+            gap = (upbit[coin] - bithumb[coin]) / bithumb[coin] * 100
+            if abs(gap) >= threshold:
+                results.append((coin, round(gap, 3)))
 
     if not results:
         await update.message.reply_text("조건 만족 코인 없음")
         return
 
     results.sort(key=lambda x: abs(x[1]), reverse=True)
-    msg = "📊 업비트 ↔ 빗썸 괴리율 (업비트 지갑 상태)\n"
-    for coin, g, wallet in results[:20]:
-        msg += f"{coin} : {g}% | 지갑: {wallet}\n"
+
+    msg = "📊 업비트 ↔ 빗썸 괴리율\n"
+    for coin, g in results[:20]:
+        msg += f"{coin} : {g}%\n"
 
     await update.message.reply_text(msg)
 
@@ -317,11 +310,13 @@ async def check_alarms(app):
 
         high = get_price(a["ex_high"], a["coin"])
         low = get_price(a["ex_low"], a["coin"])
+
         if high is None or low is None:
             continue
 
         gap = high - low
         threshold = a["diff"]
+
         if night_data.get(str(a["chat_id"]), False) and now_night:
             threshold *= 2
 
@@ -330,6 +325,7 @@ async def check_alarms(app):
             continue
 
         send = False
+
         if state["count"] < 5:
             send = True
             state["count"] += 1
@@ -340,6 +336,7 @@ async def check_alarms(app):
                 state["max_gap"] = gap
 
         ALERT_STATE[key] = state
+
         if not send:
             continue
 
@@ -369,6 +366,7 @@ async def alarm_loop(app):
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("set", set_alarm))
     app.add_handler(CommandHandler("list", list_alarm))
@@ -384,3 +382,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
