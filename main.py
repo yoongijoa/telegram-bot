@@ -2,6 +2,8 @@ import os
 import json
 import requests
 import asyncio
+import jwt
+import uuid
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -11,6 +13,10 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 #################################
 
 TOKEN = os.getenv("BOT_TOKEN")
+UPBIT_ACCESS = os.getenv("UPBIT_ACCESS")
+UPBIT_SECRET = os.getenv("UPBIT_SECRET")
+FIXIE_URL = os.getenv("FIXIE_URL")
+PROXIES = {"http": FIXIE_URL, "https": FIXIE_URL} if FIXIE_URL else {}
 
 ALARM_FILE = "alarms.json"
 NIGHT_FILE = "night_mode.json"
@@ -165,6 +171,66 @@ def get_bithumb_all():
         return {}
 
 #################################
+# 🔒 입출금 상태 조회
+#################################
+
+def get_upbit_wallet_status(coin):
+    try:
+        payload = {
+            "access_key": UPBIT_ACCESS,
+            "nonce": str(uuid.uuid4())
+        }
+        token = jwt.encode(payload, UPBIT_SECRET, algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        r = requests.get(
+            "https://api.upbit.com/v1/status/wallet",
+            headers=headers,
+            proxies=PROXIES,
+            timeout=3
+        )
+        for item in r.json():
+            if item["currency"] == coin:
+                return item["wallet_state"]
+        return "unknown"
+    except:
+        return "unknown"
+
+def get_bithumb_wallet_status(coin):
+    try:
+        r = requests.get(
+            f"https://api.bithumb.com/public/assetsstatus/{coin}",
+            timeout=3
+        )
+        data = r.json()
+        if data["status"] == "0000":
+            d = data["data"]
+            return int(d["deposit_status"]), int(d["withdrawal_status"])
+        return None, None
+    except:
+        return None, None
+
+def build_status_msg(upbit_state, b_dep, b_wd):
+    msgs = []
+
+    if upbit_state == "paused":
+        msgs.append("⛔ 업비트 입출금 중단")
+    elif upbit_state == "withdraw_only":
+        msgs.append("⚠️ 업비트 입금불가")
+    elif upbit_state == "deposit_only":
+        msgs.append("⚠️ 업비트 출금불가")
+
+    if b_dep is not None and b_wd is not None:
+        if b_dep == 0 and b_wd == 0:
+            msgs.append("⛔ 빗썸 입출금 중단")
+        elif b_dep == 0:
+            msgs.append("⚠️ 빗썸 입금불가")
+        elif b_wd == 0:
+            msgs.append("⚠️ 빗썸 출금불가")
+
+    return "\n".join(msgs) if msgs else "✅ 입출금 정상"
+
+#################################
 # 명령어
 #################################
 
@@ -254,6 +320,65 @@ async def night_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_night(data)
 
     await update.message.reply_text(f"밤모드 {'ON' if data[cid] else 'OFF'}")
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("사용법: /status ETH")
+        return
+
+    coin = context.args[0].upper()
+
+    await update.message.reply_text(f"🔍 {coin} 조회중...")
+
+    upbit_price = get_price("upbit", coin)
+    bithumb_price = get_price("bithumb", coin)
+    upbit_state = get_upbit_wallet_status(coin)
+    b_dep, b_wd = get_bithumb_wallet_status(coin)
+
+    # 업비트 입출금 상태
+    if upbit_state == "working":
+        upbit_wallet = "✅ 정상"
+    elif upbit_state == "paused":
+        upbit_wallet = "⛔ 입출금 중단"
+    elif upbit_state == "withdraw_only":
+        upbit_wallet = "⚠️ 입금불가"
+    elif upbit_state == "deposit_only":
+        upbit_wallet = "⚠️ 출금불가"
+    else:
+        upbit_wallet = "❓ 알 수 없음"
+
+    # 빗썸 입출금 상태
+    if b_dep is None:
+        bithumb_wallet = "❓ 알 수 없음"
+    elif b_dep == 1 and b_wd == 1:
+        bithumb_wallet = "✅ 정상"
+    elif b_dep == 0 and b_wd == 0:
+        bithumb_wallet = "⛔ 입출금 중단"
+    elif b_dep == 0:
+        bithumb_wallet = "⚠️ 입금불가"
+    elif b_wd == 0:
+        bithumb_wallet = "⚠️ 출금불가"
+    else:
+        bithumb_wallet = "❓ 알 수 없음"
+
+    # 괴리율
+    if upbit_price and bithumb_price:
+        gap_pct = (upbit_price - bithumb_price) / bithumb_price * 100
+        gap_line = f"📊 괴리율 : {gap_pct:+.3f}%"
+    else:
+        gap_line = "📊 괴리율 : 조회 실패"
+
+    msg = (
+        f"📊 {coin} 현황\n"
+        f"업비트 : {f'{upbit_price:,.0f}원' if upbit_price else '조회 실패'}\n"
+        f"빗썸 : {f'{bithumb_price:,.0f}원' if bithumb_price else '조회 실패'}\n"
+        f"{gap_line}\n"
+        f"업비트 입출금 : {upbit_wallet}\n"
+        f"빗썸 입출금 : {bithumb_wallet}"
+    )
+
+    await update.message.reply_text(msg)
+
 
 async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -373,6 +498,7 @@ def main():
     app.add_handler(CommandHandler("delete", delete_alarm))
     app.add_handler(CommandHandler("night", night_toggle))
     app.add_handler(CommandHandler("gap", gap_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
 
     async def start(app):
         asyncio.create_task(alarm_loop(app))
@@ -382,4 +508,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
