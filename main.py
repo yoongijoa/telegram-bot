@@ -414,9 +414,30 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     results.sort(key=lambda x: abs(x[1]), reverse=True)
 
+    await update.message.reply_text("🔒 입출금 상태 조회중...")
+
     msg = "📊 업비트 ↔ 빗썸 괴리율\n"
     for coin, g in results[:20]:
-        msg += f"{coin} : {g}%\n"
+        upbit_state = get_upbit_wallet_status(coin)
+        b_dep, b_wd = get_bithumb_wallet_status(coin)
+
+        if upbit_state == "working":
+            u_icon = "✅"
+        elif upbit_state == "paused":
+            u_icon = "⛔"
+        else:
+            u_icon = "⚠️"
+
+        if b_dep is None:
+            b_icon = "❓"
+        elif b_dep == 1 and b_wd == 1:
+            b_icon = "✅"
+        elif b_dep == 0 and b_wd == 0:
+            b_icon = "⛔"
+        else:
+            b_icon = "⚠️"
+
+        msg += f"{coin} : {g}% | 업{u_icon} 빗{b_icon}\n"
 
     await update.message.reply_text(msg)
 
