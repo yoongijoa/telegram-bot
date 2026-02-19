@@ -332,20 +332,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     upbit_price = get_price("upbit", coin)
     bithumb_price = get_price("bithumb", coin)
-    upbit_state = get_upbit_wallet_status(coin)
     b_dep, b_wd = get_bithumb_wallet_status(coin)
-
-    # 업비트 입출금 상태
-    if upbit_state == "working":
-        upbit_wallet = "✅ 정상"
-    elif upbit_state == "paused":
-        upbit_wallet = "⛔ 입출금 중단"
-    elif upbit_state == "withdraw_only":
-        upbit_wallet = "⚠️ 입금불가"
-    elif upbit_state == "deposit_only":
-        upbit_wallet = "⚠️ 출금불가"
-    else:
-        upbit_wallet = "❓ 알 수 없음"
 
     # 빗썸 입출금 상태
     if b_dep is None:
@@ -373,7 +360,6 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"업비트 : {f'{upbit_price:,.0f}원' if upbit_price else '조회 실패'}\n"
         f"빗썸 : {f'{bithumb_price:,.0f}원' if bithumb_price else '조회 실패'}\n"
         f"{gap_line}\n"
-        f"업비트 입출금 : {upbit_wallet}\n"
         f"빗썸 입출금 : {bithumb_wallet}"
     )
 
@@ -414,19 +400,11 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     results.sort(key=lambda x: abs(x[1]), reverse=True)
 
-    await update.message.reply_text("🔒 입출금 상태 조회중...")
+    await update.message.reply_text("🔒 빗썸 입출금 상태 조회중...")
 
     msg = "📊 업비트 ↔ 빗썸 괴리율\n"
     for coin, g in results[:20]:
-        upbit_state = get_upbit_wallet_status(coin)
         b_dep, b_wd = get_bithumb_wallet_status(coin)
-
-        if upbit_state == "working":
-            u_icon = "✅"
-        elif upbit_state == "paused":
-            u_icon = "⛔"
-        else:
-            u_icon = "⚠️"
 
         if b_dep is None:
             b_icon = "❓"
@@ -437,7 +415,7 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             b_icon = "⚠️"
 
-        msg += f"{coin} : {g}% | 업{u_icon} 빗{b_icon}\n"
+        msg += f"{coin} : {g}% | 빗{b_icon}\n"
 
     await update.message.reply_text(msg)
 
