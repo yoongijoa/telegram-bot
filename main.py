@@ -20,6 +20,7 @@ PROXIES = {"http": FIXIE_URL, "https": FIXIE_URL} if FIXIE_URL else {}
 
 ALARM_FILE = "alarms.json"
 NIGHT_FILE = "night_mode.json"
+GAP_AUTO_FILE = "gap_auto.json"   # ✅ 추가: 자동 gap 알람 설정 저장
 
 CHECK_INTERVAL = 5
 
@@ -62,6 +63,18 @@ def load_night():
 
 def save_night(data):
     with open(NIGHT_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# ✅ 추가: 자동 gap 알람 설정 저장/불러오기
+def load_gap_auto():
+    try:
+        with open(GAP_AUTO_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_gap_auto(data):
+    with open(GAP_AUTO_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 #################################
@@ -241,7 +254,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/list\n"
         "/delete 번호\n"
         "/night\n"
-        "/gap 0.5"
+        "/gap 0.5\n"
+        "/gap on 1 10  ← 1% 이상, 10분마다 자동 알람\n"
+        "/gap on 1 30  ← 1% 이상, 30분마다 자동 알람\n"
+        "/gap on 1     ← 분 생략시 기본 30분\n"
+        "/gap off      ← 자동 알람 중단"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -364,8 +381,58 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
-# ✅ 수정된 gap_cmd: 메시지 10개씩 분할 전송
 async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ✅ /gap on 1 [분] 처리  예) /gap on 1 10  /gap on 1 30
+    if context.args and context.args[0].lower() == "on":
+        if len(context.args) < 2:
+            await update.message.reply_text("사용법: /gap on [퍼센트] [분]\n예) /gap on 1 10  (1% 이상, 10분마다)")
+            return
+        try:
+            threshold = float(context.args[1])
+        except:
+            await update.message.reply_text("퍼센트는 숫자로 입력해줘.\n예) /gap on 1 10")
+            return
+
+        # 분 인수 파싱 (없으면 기본 30분)
+        interval_min = 30
+        if len(context.args) >= 3:
+            raw = context.args[2].replace("분", "").strip()
+            try:
+                interval_min = int(raw)
+                if interval_min < 1:
+                    raise ValueError
+            except:
+                await update.message.reply_text("분은 1 이상 정수로 입력해줘.\n예) /gap on 1 10")
+                return
+
+        data = load_gap_auto()
+        cid = str(update.effective_chat.id)
+        data[cid] = {
+            "threshold": threshold,
+            "interval_min": interval_min,
+            "enabled": True,
+            "next_run": 0   # 즉시 첫 실행 허용하려면 0, 아니면 time.time() + interval_min*60
+        }
+        save_gap_auto(data)
+
+        await update.message.reply_text(
+            f"✅ 자동 gap 알람 ON\n"
+            f"조건 : {threshold}% 이상 & 빗썸 입출금 정상\n"
+            f"주기 : {interval_min}분마다"
+        )
+        return
+
+    # ✅ /gap off 처리
+    if context.args and context.args[0].lower() == "off":
+        data = load_gap_auto()
+        cid = str(update.effective_chat.id)
+        if cid in data:
+            data[cid]["enabled"] = False
+            save_gap_auto(data)
+        await update.message.reply_text("🔕 자동 gap 알람 OFF")
+        return
+
+    # 기존 /gap 0.5 (수동 1회 조회)
     if not context.args:
         await update.message.reply_text("사용법: /gap 0.5")
         return
@@ -376,17 +443,28 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("숫자만 입력해줘.")
         return
 
-    await update.message.reply_text("📊 전체 코인 비교중...")
+    await _send_gap_result(update.effective_chat.id, threshold, update.message)
+
+
+# ✅ 공통 gap 조회 함수 (수동 + 자동 모두 사용)
+async def _send_gap_result(chat_id, threshold, reply_to=None):
+    async def send(text):
+        if reply_to:
+            await reply_to.reply_text(text)
+        else:
+            # 자동 알람 전송 시 app 인스턴스를 전역에서 접근
+            await _APP.bot.send_message(chat_id=chat_id, text=text)
+
+    await send("📊 전체 코인 비교중...")
 
     upbit = get_upbit_all()
     bithumb = get_bithumb_all()
 
     if not upbit or not bithumb:
-        await update.message.reply_text("가격 조회 실패")
+        await send("가격 조회 실패")
         return
 
     results = []
-
     for coin in upbit:
         if coin in bithumb and bithumb[coin] > 0:
             gap = (upbit[coin] - bithumb[coin]) / bithumb[coin] * 100
@@ -394,13 +472,13 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 results.append((coin, round(gap, 3)))
 
     if not results:
-        await update.message.reply_text("조건 만족 코인 없음")
+        await send(f"📊 {threshold}% 이상 괴리 코인 없음")
         return
 
     results.sort(key=lambda x: abs(x[1]), reverse=True)
     top = results[:20]
 
-    await update.message.reply_text("🔒 빗썸 입출금 상태 조회중...")
+    await send("🔒 빗썸 입출금 상태 조회중...")
 
     lines = []
     for coin, g in top:
@@ -408,20 +486,36 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if b_dep is None:
             b_icon = "❓"
+            is_open = False
         elif b_dep == 1 and b_wd == 1:
             b_icon = "✅"
+            is_open = True
         elif b_dep == 0 and b_wd == 0:
             b_icon = "⛔️"
+            is_open = False
         else:
             b_icon = "⚠️"
+            is_open = False
 
-        lines.append(f"{coin} : {g}% | 빗{b_icon}")
+        # ✅ 자동 알람 모드는 빗썸 정상인 것만 포함
+        if reply_to is None and not is_open:
+            continue
+
+        lines.append(f"{coin} : {g:+.3f}% | 빗{b_icon}")
+
+    if not lines:
+        # 자동 알람일 때 조건 맞는 코인이 없으면 조용히 스킵
+        if reply_to is None:
+            return
+        await send("조건 만족 코인 없음 (빗썸 입출금 정상 기준)")
+        return
 
     chunk_size = 10
     for i in range(0, len(lines), chunk_size):
         chunk = lines[i:i + chunk_size]
-        header = "📊 업비트 ↔️ 빗썸 괴리율\n" if i == 0 else ""
-        await update.message.reply_text(header + "\n".join(chunk))
+        header = f"📊 업비트↔빗썸 괴리율 ({threshold}%↑, 빗썸정상만)\n" if i == 0 else ""
+        await send(header + "\n".join(chunk))
+
 
 #################################
 # 🔔 알람 체크 루프
@@ -494,11 +588,57 @@ async def alarm_loop(app):
             print(f"[알람 루프 오류] {e}")
         await asyncio.sleep(CHECK_INTERVAL)
 
+
+import time as _time
+
+# ✅ 자동 gap 알람 루프 - 유저별 간격 지원
+async def gap_auto_loop():
+    while True:
+        await asyncio.sleep(60)  # 1분마다 체크
+        try:
+            now = _time.time()
+            data = load_gap_auto()
+            changed = False
+
+            for cid, cfg in data.items():
+                if not cfg.get("enabled", False):
+                    continue
+
+                next_run = cfg.get("next_run", 0)
+                if now < next_run:
+                    continue  # 아직 시간 안 됨
+
+                interval_sec = cfg.get("interval_min", 30) * 60
+                threshold = cfg.get("threshold", 1.0)
+
+                # 다음 실행 시간 업데이트
+                cfg["next_run"] = now + interval_sec
+                changed = True
+
+                try:
+                    await _send_gap_result(int(cid), threshold, reply_to=None)
+                except Exception as e:
+                    print(f"[gap 자동 알람 오류] chat_id={cid} → {e}")
+
+            if changed:
+                save_gap_auto(data)
+
+        except Exception as e:
+            print(f"[gap 자동 루프 오류] {e}")
+
+
 #################################
-# ✅ 수정된 main: 타임아웃 설정 추가
+# 전역 app 참조 (자동 알람 전송용)
+#################################
+_APP = None
+
+#################################
+# main
 #################################
 
 def main():
+    global _APP
+
     app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -508,6 +648,8 @@ def main():
         .pool_timeout(30)
         .build()
     )
+
+    _APP = app
 
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("set", set_alarm))
@@ -519,6 +661,7 @@ def main():
 
     async def start(app):
         asyncio.create_task(alarm_loop(app))
+        asyncio.create_task(gap_auto_loop())   # ✅ 자동 gap 루프 시작
 
     app.post_init = start
     app.run_polling()
