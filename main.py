@@ -20,7 +20,7 @@ PROXIES = {"http": FIXIE_URL, "https": FIXIE_URL} if FIXIE_URL else {}
 
 ALARM_FILE = "alarms.json"
 NIGHT_FILE = "night_mode.json"
-GAP_AUTO_FILE = "gap_auto.json"   # ✅ 추가: 자동 gap 알람 설정 저장
+GAP_AUTO_FILE = "gap_auto.json"
 
 CHECK_INTERVAL = 5
 
@@ -38,6 +38,18 @@ FEE_RATE = {
 }
 
 ALERT_STATE = {}
+
+#################################
+# 가격 포맷 함수 (소수점 자동 조정)
+#################################
+
+def fmt(n):
+    if n >= 100:
+        return f"{n:,.0f}"    # 100원 이상 → 소수점 없음
+    elif n >= 1:
+        return f"{n:,.2f}"    # 1원~100원 → 소수점 2자리
+    else:
+        return f"{n:,.4f}"    # 1원 미만 → 소수점 4자리
 
 #################################
 # 저장
@@ -65,7 +77,6 @@ def save_night(data):
     with open(NIGHT_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ✅ 추가: 자동 gap 알람 설정 저장/불러오기
 def load_gap_auto():
     try:
         with open(GAP_AUTO_FILE, "r", encoding="utf-8") as f:
@@ -372,8 +383,8 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = (
         f"📊 {coin} 현황\n"
-        f"업비트 : {f'{upbit_price:,.0f}원' if upbit_price else '조회 실패'}\n"
-        f"빗썸 : {f'{bithumb_price:,.0f}원' if bithumb_price else '조회 실패'}\n"
+        f"업비트 : {fmt(upbit_price) if upbit_price else '조회 실패'}원\n"
+        f"빗썸 : {fmt(bithumb_price) if bithumb_price else '조회 실패'}원\n"
         f"{gap_line}\n"
         f"빗썸 입출금 : {bithumb_wallet}"
     )
@@ -382,7 +393,6 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ✅ /gap on 1 [분] 처리  예) /gap on 1 10  /gap on 1 30
     if context.args and context.args[0].lower() == "on":
         if len(context.args) < 2:
             await update.message.reply_text("사용법: /gap on [퍼센트] [분]\n예) /gap on 1 10  (1% 이상, 10분마다)")
@@ -393,7 +403,6 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("퍼센트는 숫자로 입력해줘.\n예) /gap on 1 10")
             return
 
-        # 분 인수 파싱 (없으면 기본 30분)
         interval_min = 30
         if len(context.args) >= 3:
             raw = context.args[2].replace("분", "").strip()
@@ -411,7 +420,7 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "threshold": threshold,
             "interval_min": interval_min,
             "enabled": True,
-            "next_run": 0   # 즉시 첫 실행 허용하려면 0, 아니면 time.time() + interval_min*60
+            "next_run": 0
         }
         save_gap_auto(data)
 
@@ -422,7 +431,6 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ✅ /gap off 처리
     if context.args and context.args[0].lower() == "off":
         data = load_gap_auto()
         cid = str(update.effective_chat.id)
@@ -432,7 +440,6 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔕 자동 gap 알람 OFF")
         return
 
-    # 기존 /gap 0.5 (수동 1회 조회)
     if not context.args:
         await update.message.reply_text("사용법: /gap 0.5")
         return
@@ -446,13 +453,11 @@ async def gap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _send_gap_result(update.effective_chat.id, threshold, update.message)
 
 
-# ✅ 공통 gap 조회 함수 (수동 + 자동 모두 사용)
 async def _send_gap_result(chat_id, threshold, reply_to=None):
     async def send(text):
         if reply_to:
             await reply_to.reply_text(text)
         else:
-            # 자동 알람 전송 시 app 인스턴스를 전역에서 접근
             await _APP.bot.send_message(chat_id=chat_id, text=text)
 
     await send("📊 전체 코인 비교중...")
@@ -497,14 +502,12 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
             b_icon = "⚠️"
             is_open = False
 
-        # ✅ 자동 알람 모드는 빗썸 정상인 것만 포함
         if reply_to is None and not is_open:
             continue
 
         lines.append(f"{coin} : {g:+.3f}% | 빗{b_icon}")
 
     if not lines:
-        # 자동 알람일 때 조건 맞는 코인이 없으면 조용히 스킵
         if reply_to is None:
             return
         await send("조건 만족 코인 없음 (빗썸 입출금 정상 기준)")
@@ -536,7 +539,8 @@ async def check_alarms(app):
         if high is None or low is None:
             continue
 
-        gap = high - low
+        # ✅ 수정: 소수점 오차 방지를 위해 round() 적용
+        gap = round(high - low, 8)
         threshold = a["diff"]
 
         if night_data.get(str(a["chat_id"]), False) and now_night:
@@ -564,17 +568,17 @@ async def check_alarms(app):
 
         buy_fee = low * FEE_RATE.get(a["ex_low"], 0)
         sell_fee = high * FEE_RATE.get(a["ex_high"], 0)
-        net_profit = gap - buy_fee - sell_fee
+        net_profit = round(gap - buy_fee - sell_fee, 8)
 
         try:
             await app.bot.send_message(
                 chat_id=a["chat_id"],
                 text=(
                     f"🚨 차익 발생 [{a['coin']}]\n"
-                    f"{a['kr_high']} : {high:,.0f}원\n"
-                    f"{a['kr_low']} : {low:,.0f}원\n"
-                    f"📈 가격차 : {gap:,.0f}원\n"
-                    f"💸 순이익 : {net_profit:,.0f}원"
+                    f"{a['kr_high']} : {fmt(high)}원\n"
+                    f"{a['kr_low']} : {fmt(low)}원\n"
+                    f"📈 가격차 : {fmt(gap)}원\n"
+                    f"💸 순이익 : {fmt(net_profit)}원"
                 )
             )
         except Exception as e:
@@ -591,10 +595,9 @@ async def alarm_loop(app):
 
 import time as _time
 
-# ✅ 자동 gap 알람 루프 - 유저별 간격 지원
 async def gap_auto_loop():
     while True:
-        await asyncio.sleep(60)  # 1분마다 체크
+        await asyncio.sleep(60)
         try:
             now = _time.time()
             data = load_gap_auto()
@@ -606,12 +609,11 @@ async def gap_auto_loop():
 
                 next_run = cfg.get("next_run", 0)
                 if now < next_run:
-                    continue  # 아직 시간 안 됨
+                    continue
 
                 interval_sec = cfg.get("interval_min", 30) * 60
                 threshold = cfg.get("threshold", 1.0)
 
-                # 다음 실행 시간 업데이트
                 cfg["next_run"] = now + interval_sec
                 changed = True
 
@@ -661,7 +663,7 @@ def main():
 
     async def start(app):
         asyncio.create_task(alarm_loop(app))
-        asyncio.create_task(gap_auto_loop())   # ✅ 자동 gap 루프 시작
+        asyncio.create_task(gap_auto_loop())
 
     app.post_init = start
     app.run_polling()
