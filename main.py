@@ -4,6 +4,7 @@ import requests
 import asyncio
 import jwt
 import uuid
+import time as _time
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -18,11 +19,12 @@ UPBIT_SECRET = os.getenv("UPBIT_SECRET")
 FIXIE_URL = os.getenv("FIXIE_URL")
 PROXIES = {"http": FIXIE_URL, "https": FIXIE_URL} if FIXIE_URL else {}
 
-ALARM_FILE = "alarms.json"
-NIGHT_FILE = "night_mode.json"
-GAP_AUTO_FILE = "gap_auto.json"
+ALARM_FILE = "/app/data/alarms.json"
+NIGHT_FILE = "/app/data/night_mode.json"
+GAP_AUTO_FILE = "/app/data/gap_auto.json"
 
 CHECK_INTERVAL = 5
+COOLDOWN_SEC = 300  # 5분 쿨다운 (원하면 조절)
 
 NIGHT_START = 23
 NIGHT_END = 7
@@ -45,15 +47,18 @@ ALERT_STATE = {}
 
 def fmt(n):
     if n >= 100:
-        return f"{n:,.0f}"    # 100원 이상 → 소수점 없음
+        return f"{n:,.0f}"
     elif n >= 1:
-        return f"{n:,.2f}"    # 1원~100원 → 소수점 2자리
+        return f"{n:,.2f}"
     else:
-        return f"{n:,.4f}"    # 1원 미만 → 소수점 4자리
+        return f"{n:,.4f}"
 
 #################################
 # 저장
 #################################
+
+def ensure_data_dir():
+    os.makedirs("/app/data", exist_ok=True)
 
 def load_alarms():
     try:
@@ -63,6 +68,7 @@ def load_alarms():
         return []
 
 def save_alarms(data):
+    ensure_data_dir()
     with open(ALARM_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -74,6 +80,7 @@ def load_night():
         return {}
 
 def save_night(data):
+    ensure_data_dir()
     with open(NIGHT_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -85,6 +92,7 @@ def load_gap_auto():
         return {}
 
 def save_gap_auto(data):
+    ensure_data_dir()
     with open(GAP_AUTO_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -521,50 +529,51 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
 
 
 #################################
-# 🔔 알람 체크 루프
+# 🔔 알람 체크 루프 (2번 울리고 쿨다운)
 #################################
 
 async def check_alarms(app):
     alarms = load_alarms()
     night_data = load_night()
     now_night = is_night_time()
+    now = _time.time()
 
     for a in alarms:
         key = f"{a['chat_id']}_{a['coin']}_{a['ex_high']}_{a['ex_low']}"
-        state = ALERT_STATE.get(key, {"count": 0, "max_gap": 0})
+        state = ALERT_STATE.get(key, {"last_sent": 0, "active": False, "count": 0})
 
         high = get_price(a["ex_high"], a["coin"])
         low = get_price(a["ex_low"], a["coin"])
 
         if high is None or low is None:
+            print(f"[가격 조회 실패] {a['coin']} high={high} low={low}")
             continue
 
-        # ✅ 수정: 소수점 오차 방지를 위해 round() 적용
         gap = round(high - low, 8)
         threshold = a["diff"]
 
         if night_data.get(str(a["chat_id"]), False) and now_night:
             threshold *= 2
 
+        # 차익 사라지면 완전 리셋
         if gap < threshold:
-            ALERT_STATE[key] = {"count": 0, "max_gap": 0}
+            ALERT_STATE[key] = {"last_sent": 0, "active": False, "count": 0}
             continue
 
-        send = False
+        count = state.get("count", 0)
+        last_sent = state.get("last_sent", 0)
 
-        if state["count"] < 5:
-            send = True
-            state["count"] += 1
-            state["max_gap"] = max(state["max_gap"], gap)
+        # 2번 미만이면 바로 전송
+        if count < 2:
+            pass
         else:
-            if gap > state["max_gap"]:
-                send = True
-                state["max_gap"] = gap
+            # 2번 울린 이후엔 쿨다운 체크
+            if now - last_sent < COOLDOWN_SEC:
+                continue
+            # 쿨다운 끝나면 count 리셋 → 다시 2번 울림
+            count = 0
 
-        ALERT_STATE[key] = state
-
-        if not send:
-            continue
+        ALERT_STATE[key] = {"last_sent": now, "active": True, "count": count + 1}
 
         buy_fee = low * FEE_RATE.get(a["ex_low"], 0)
         sell_fee = high * FEE_RATE.get(a["ex_high"], 0)
@@ -592,8 +601,6 @@ async def alarm_loop(app):
             print(f"[알람 루프 오류] {e}")
         await asyncio.sleep(CHECK_INTERVAL)
 
-
-import time as _time
 
 async def gap_auto_loop():
     while True:
@@ -640,6 +647,8 @@ _APP = None
 
 def main():
     global _APP
+
+    ensure_data_dir()
 
     app = (
         ApplicationBuilder()
