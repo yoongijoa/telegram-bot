@@ -648,7 +648,6 @@ def main():
         .read_timeout(30)
         .write_timeout(30)
         .pool_timeout(30)
-        .drop_pending_updates(True)
         .build()
     )
 
@@ -667,7 +666,7 @@ def main():
         asyncio.create_task(gap_auto_loop())
 
     app.post_init = start
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
