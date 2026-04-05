@@ -24,7 +24,7 @@ NIGHT_FILE = "/app/data/night_mode.json"
 GAP_AUTO_FILE = "/app/data/gap_auto.json"
 
 CHECK_INTERVAL = 5
-COOLDOWN_SEC = 300  # 5분 쿨다운 (원하면 조절)
+COOLDOWN_SEC = 300  # 5분 쿨다운
 
 NIGHT_START = 23
 NIGHT_END = 7
@@ -277,19 +277,29 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/gap on 1 10  ← 1% 이상, 10분마다 자동 알람\n"
         "/gap on 1 30  ← 1% 이상, 30분마다 자동 알람\n"
         "/gap on 1     ← 분 생략시 기본 30분\n"
-        "/gap off      ← 자동 알람 중단"
+        "/gap off      ← 자동 알람 중단\n"
+        "/status ETH   ← 현재가 및 괴리율 조회"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 4:
-        await update.message.reply_text("❌ /set 업비트 빗썸 ETH 1000")
+        await update.message.reply_text("❌ /set 업비트 빗썸 ETH 1000\n코인 심볼은 반드시 영문으로 입력해주세요\n예) ETH, BTC, XRP")
         return
 
     ex_high_kr, ex_low_kr, coin, diff = context.args
     coin = coin.upper()
 
+    # 한글 포함 여부 체크
+    if any('\uac00' <= c <= '\ud7a3' for c in coin):
+        await update.message.reply_text(
+            f"❌ 코인 심볼은 영문으로 입력해주세요\n"
+            f"예) 이더리움 → ETH, 비트코인 → BTC, 리플 → XRP\n"
+            f"/status ETH 처럼 먼저 조회해보세요"
+        )
+        return
+
     if ex_high_kr not in EXCHANGE_MAP or ex_low_kr not in EXCHANGE_MAP:
-        await update.message.reply_text("거래소 이름 오류")
+        await update.message.reply_text("거래소 이름 오류\n예) 업비트, 빗썸")
         return
 
     try:
@@ -298,11 +308,37 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("차익은 숫자로 입력")
         return
 
+    # 저장 전 가격 조회 검증
+    await update.message.reply_text(f"🔍 {coin} 조회 확인중...")
+
+    high = get_price(EXCHANGE_MAP[ex_high_kr], coin)
+    low = get_price(EXCHANGE_MAP[ex_low_kr], coin)
+
+    if high is None:
+        await update.message.reply_text(
+            f"❌ {ex_high_kr}에서 {coin} 조회 실패\n"
+            f"심볼을 영문으로 다시 확인해주세요\n"
+            f"예) ETH, BTC, XRP"
+        )
+        return
+
+    if low is None:
+        await update.message.reply_text(
+            f"❌ {ex_low_kr}에서 {coin} 조회 실패\n"
+            f"해당 거래소에 상장되지 않은 코인일 수 있어요"
+        )
+        return
+
+    # 유저 정보 수집
+    user = update.effective_user
+    username = f"@{user.username}" if user.username else user.full_name
+
     alarms = load_alarms()
     cid = update.effective_chat.id
 
     alarms.append({
         "chat_id": cid,
+        "username": username,
         "ex_high": EXCHANGE_MAP[ex_high_kr],
         "ex_low": EXCHANGE_MAP[ex_low_kr],
         "kr_high": ex_high_kr,
@@ -312,7 +348,11 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
 
     save_alarms(alarms)
-    await update.message.reply_text("✅ 알람 저장 완료")
+    await update.message.reply_text(
+        f"✅ 알람 저장 완료\n"
+        f"{ex_high_kr} : {fmt(high)}원\n"
+        f"{ex_low_kr} : {fmt(low)}원"
+    )
 
 async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
@@ -529,6 +569,33 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
 
 
 #################################
+# 👥 사용자 목록 조회 (관리자용)
+#################################
+
+async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    alarms = load_alarms()
+    if not alarms:
+        await update.message.reply_text("등록된 알람 없음")
+        return
+
+    from collections import defaultdict
+    user_map = defaultdict(list)
+    for a in alarms:
+        name = a.get("username", f"ID:{a['chat_id']}")
+        label = f"{a['kr_high']}→{a['kr_low']} {a['coin']} {a['diff']}원"
+        user_map[name].append(label)
+
+    msg = "👥 알람 사용자 목록\n\n"
+    for name, items in user_map.items():
+        msg += f"👤 {name}\n"
+        for item in items:
+            msg += f"  • {item}\n"
+        msg += "\n"
+
+    await update.message.reply_text(msg)
+
+
+#################################
 # 🔔 알람 체크 루프 (2번 울리고 쿨다운)
 #################################
 
@@ -669,6 +736,7 @@ def main():
     app.add_handler(CommandHandler("night", night_toggle))
     app.add_handler(CommandHandler("gap", gap_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("users", users_cmd))
 
     async def start(app):
         asyncio.create_task(alarm_loop(app))
