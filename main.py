@@ -106,43 +106,46 @@ def is_night_time():
     return h >= NIGHT_START or h < NIGHT_END
 
 #################################
-# 안전한 가격 조회 (0원 차단 + status 체크)
+# 안전한 가격 조회 (재시도 3회 + 쿨다운)
 #################################
 
-def get_price(exchange, coin):
-    try:
-        if exchange == "upbit":
-            r = requests.get(
-                f"https://api.upbit.com/v1/ticker?markets=KRW-{coin}",
-                timeout=3
-            )
-            data = r.json()
-            if not data:
+def get_price(exchange, coin, retries=3, delay=1):
+    for i in range(retries):
+        try:
+            if exchange == "upbit":
+                r = requests.get(
+                    f"https://api.upbit.com/v1/ticker?markets=KRW-{coin}",
+                    timeout=3
+                )
+                data = r.json()
+                if not data:
+                    raise ValueError("empty response")
+                price = float(data[0]["trade_price"])
+
+            elif exchange == "bithumb":
+                r = requests.get(
+                    f"https://api.bithumb.com/public/ticker/{coin}_KRW",
+                    timeout=3
+                )
+                data = r.json()
+                if data.get("status") != "0000":
+                    raise ValueError(f"status={data.get('status')}")
+                price = float(data["data"]["closing_price"])
+
+            else:
                 return None
-            price = float(data[0]["trade_price"])
 
-        elif exchange == "bithumb":
-            r = requests.get(
-                f"https://api.bithumb.com/public/ticker/{coin}_KRW",
-                timeout=3
-            )
-            data = r.json()
+            if price <= 0:
+                raise ValueError("price <= 0")
 
-            if data.get("status") != "0000":
-                return None
+            return price
 
-            price = float(data["data"]["closing_price"])
+        except Exception:
+            if i < retries - 1:
+                _time.sleep(delay)
+            continue
 
-        else:
-            return None
-
-        if price <= 0:
-            return None
-
-        return price
-
-    except:
-        return None
+    return None
 
 #################################
 # 📊 전체 코인 조회 (gap용)
