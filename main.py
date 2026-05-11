@@ -34,12 +34,536 @@ EXCHANGE_MAP = {
     "빗썸": "bithumb",
 }
 
+# 거래 수수료 (매매)
 FEE_RATE = {
     "upbit": 0.0005,
     "bithumb": 0.0004
 }
 
+# 빗썸 출금 수수료
+# None = 출금 수량의 1%
+# 숫자 = 고정 수수료 (해당 코인 단위)
+BITHUMB_WITHDRAW_FEE = {
+    "BTC":   0.0002,
+    "ETH":   0.005,
+    "ETC":   0.005,
+    "XRP":   0.4,
+    "BCH":   0.0005,
+    "QTUM":  0.009,
+    "ADA":   0.45,
+    "LINK":  0.03488447,
+    "ENJ":   None,          # 1%
+    "VET":   10,
+    "THETA": None,          # 1%
+    "ZRX":   None,          # 1%
+    "SNT":   None,          # 1%
+    "BAT":   None,          # 1%
+    "WAVES": None,          # 1%
+    "KNC":   None,          # 1%
+    "GLM":   None,          # 1%
+    "ZIL":   None,          # 1%
+    "WAXP":  None,          # 1%
+    "POWR":  None,          # 1%
+    "STEEM": None,          # 1%
+    "ICX":   None,          # 1% (출금 수량의 1%)
+    "TRX":   0.9,
+    "ELF":   None,          # 1%
+    "MTL":   None,          # 1%
+    "IOST":  None,          # 1%
+    "ORBS":  36.60227272,
+    "TFUEL": None,          # 1%
+    "ANKR":  None,          # 1%
+    "CRO":   None,          # 1%
+    "CHR":   None,          # 1%
+    "MBL":   None,          # 1%
+    "WIN":   None,          # 무료 (Tron)
+    "COS":   None,          # 1%
+    "EL":    540,
+    "HIVE":  None,          # 1%
+    "BORA":  None,          # 1%
+    "ARPA":  None,          # 1%
+    "CTC":   1.98174733,
+    "CKB":   None,          # 1%
+    "AERGO": None,          # 1%
+    "UNI":   0.09047752,
+    "YFI":   None,          # 1%
+    "UMA":   None,          # 1%
+    "AAVE":  None,          # 1%
+    "COMP":  None,          # 1%
+    "RSR":   None,          # 1%
+    "NMR":   None,          # 1%
+    "RLC":   None,          # 1%
+    "UOS":   None,          # 1%
+    "SAND":  3.67,
+    "BEL":   None,          # 1%
+    "OBSR":  None,          # 1%
+    "GRT":   None,          # 1%
+    "BIOT":  None,          # 1%
+    "SNX":   None,          # 1%
+    "OXT":   None,          # 1%
+    "AQT":   None,          # 1%
+    "WIKEN": 80,
+    "CTSI":  None,          # 1%
+    "MANA":  None,          # 1%
+    "LPT":   None,          # 1%
+    "SRT":   0.5,
+    "SUSHI": None,          # 1%
+    "NSBT":  0.03,
+    "PUNDIX":None,          # 1%
+    "CELR":  None,          # 1%
+    "ALICE": None,          # 1%
+    "OGN":   None,          # 1%
+    "COTI":  None,          # 1%
+    "CAKE":  None,          # 1%
+    "BNT":   None,          # 1%
+    "XVS":   None,          # 1%
+    "SWAP":  None,          # 1%
+    "CHZ":   1,
+    "AXS":   None,          # 1%
+    "DAO":   None,          # 1%
+    "SIX":   None,          # 1%
+    "USDS":  1,
+    "SHIB":  52516.3043,
+    "POL":   0.009,
+    "WOO":   None,          # 1%
+    "ACH":   None,          # 1%
+    "ANC":   5.4,
+    "XLM":   0.005,
+    "ONT":   None,          # 1%
+    "META":  None,          # 1%
+    "KAIA":  0.5,
+    "ONG":   None,          # 1%
+    "ALGO":  0.09,
+    "JST":   None,          # 1%
+    "XTZ":   None,          # 1%
+    "MLK":   None,          # 1%
+    "DOT":   0.075,
+    "ATOM":  0.01,
+    "DOGE":  8,
+    "KSM":   None,          # 1%
+    "CTK":   None,          # 1%
+    "BNB":   0.001,
+    "XEC":   500,
+    "SOL":   0.009,
+    "EGLD":  None,          # 1%
+    "MASK":  None,          # 1%
+    "C98":   None,          # 1%
+    "MED":   None,          # 1%
+    "SGB":   0.005,
+    "1INCH": None,          # 1%
+    "CRV":   None,          # 1%
+    "BOBA":  None,          # 1%
+    "RPG":   0.5,
+    "DYDX":  None,          # 1%
+    "MINA":  None,          # 1%
+    "JOE":   None,          # 1%
+    "GALA":  None,          # 1%
+    "ENS":   0.05,
+    "PURSE": 750,
+    "BTT":   None,          # 무료 (Tron)
+    "JASMY": None,          # 1%
+    "REQ":   None,          # 1%
+    "CSPR":  None,          # 1%
+    "SOLO":  0.1,
+    "AVAX":  0.01,
+    "TDROP": None,          # 1%
+    "HBAR":  0.01,
+    "FANC":  None,          # 1%
+    "MAY":   None,          # 1%
+    "WITCH": 50,
+    "REI":   None,          # 1%
+    "T":     None,          # 1%
+    "AQUA":  0.01,
+    "MBX":   None,          # 1%
+    "GMT":   None,          # 1%
+    "TAVA":  None,          # 1%
+    "D":     None,          # 1%
+    "APE":   None,          # 1%
+    "WNCG":  None,          # 1%
+    "XCN":   None,          # 1%
+    "LUNA2": 0.1,
+    "TALK":  140,
+    "AZIT":  None,          # 1%
+    "ETHW":  0.01,
+    "FLR":   None,          # 1%
+    "SFP":   None,          # 1%
+    "FITFI": 20,
+    "STAT":  None,          # 1%
+    "LM":    None,          # 1%
+    "GRND":  None,          # 1%
+    "APT":   None,          # 1%
+    "BLUR":  None,          # 1%
+    "HOOK":  None,          # 1%
+    "OP":    None,          # 1%
+    "ROA":   None,          # 1%
+    "GMX":   None,          # 1%
+    "STX":   2,
+    "XPLA":  None,          # 1%
+    "ARB":   0.2,
+    "INJ":   None,          # 1%
+    "HFT":   None,          # 1%
+    "RPL":   None,          # 1%
+    "IMX":   None,          # 1%
+    "CFX":   None,          # 1%
+    "ACS":   None,          # 1%
+    "FRAX":  None,          # 1%
+    "CELO":  None,          # 1%
+    "LDO":   None,          # 1%
+    "S":     None,          # 1%
+    "FET":   1,
+    "SUI":   0.009,
+    "NCT":   None,          # 1%
+    "FLOKI": None,          # 1%
+    "ID":    None,          # 1%
+    "RENDER":None,          # 1%
+    "OSMO":  None,          # 1%
+    "FIL":   None,          # 1%
+    "ILV":   None,          # 1%
+    "MAV":   None,          # 1%
+    "HVH":   100,
+    "RSS3":  None,          # 1%
+    "AUDIO": None,          # 1%
+    "AGI":   60,
+    "ASTR":  None,          # 1%
+    "WLD":   0.05,          # Optimism 기준
+    "FLUX":  None,          # 1%
+    "AGLD":  None,          # 1%
+    "AR":    None,          # 1%
+    "RVN":   None,          # 1%
+    "EDU":   None,          # 1%
+    "SEI":   0.04,
+    "WAXL":  None,          # 1%
+    "MOC":   None,          # 1%
+    "PEPE":  92913.4615,
+    "CYBER": None,          # 1%
+    "ARKM":  None,          # 1%
+    "PYR":   None,          # 1%
+    "IOTX":  None,          # 1%
+    "HIGH":  None,          # 1%
+    "PENDLE":None,          # 1%
+    "BICO":  None,          # 1%
+    "STORJ": None,          # 1%
+    "API3":  None,          # 1%
+    "ZTX":   10,
+    "MNT":   None,          # 1%
+    "GTC":   None,          # 1%
+    "METIS": None,          # 1%
+    "TIA":   None,          # 1%
+    "ICP":   None,          # 1%
+    "SPURS": 0.1,
+    "NEO":   None,          # 1%
+    "GAS":   None,          # 1%
+    "BIGTIME":None,         # 1%
+    "ZETA":  None,          # 1%
+    "ARK":   None,          # 1%
+    "YGG":   None,          # 1%
+    "HUNT":  None,          # 1%
+    "KAVA":  None,          # 1%
+    "MAGIC": None,          # 1%
+    "AUCTION":None,         # 1%
+    "USDT":  None,          # Tron: 무료, ETH: 4
+    "USDC":  1,
+    "RAD":   None,          # 1%
+    "LSK":   None,          # 1%
+    "TT":    None,          # 1%
+    "ACE":   None,          # 1%
+    "SKL":   None,          # 1%
+    "IQ":    None,          # 1%
+    "PYTH":  None,          # 1%
+    "MANTA": None,          # 1%
+    "AKT":   None,          # 1%
+    "BEAM":  None,          # 1%
+    "PHA":   None,          # 1%
+    "JTO":   None,          # 1%
+    "JUP":   None,          # 1%
+    "STRK":  0.01,          # Starknet 기준
+    "SC":    None,          # 1%
+    "TRAC":  None,          # 1%
+    "BONK":  15000,
+    "TOKAMAK":None,         # 1%
+    "AIOZ":  None,          # 1%
+    "ZK":    None,          # 1%
+    "ONDO":  1.26247713,
+    "ALT":   None,          # 1%
+    "TAO":   0.01,
+    "NEAR":  0.02,
+    "RON":   None,          # 1%
+    "STRAX": None,          # 1%
+    "XAI":   None,          # 1%
+    "W":     None,          # 1%
+    "POLYX": None,          # 1%
+    "CORE":  None,          # 1%
+    "BB":    None,          # 1%
+    "POKT":  None,          # 1%
+    "REZ":   None,          # 1%
+    "ENA":   2,
+    "MOCA":  None,          # 1%
+    "ETHFI": None,          # 1%
+    "MEW":   None,          # 1%
+    "ZRO":   None,          # 1%
+    "IO":    None,          # 1%
+    "KLY":   0.01,
+    "BLAST": None,          # 1%
+    "TAIKO": None,          # 1%
+    "BRETT": 1,
+    "ATH":   None,          # 1%
+    "PCI":   12.5,
+    "AVAIL": None,          # 1%
+    "TON":   None,          # 1%
+    "G":     None,          # 1%
+    "LISTA": None,          # 1%
+    "PEAQ":  None,          # 1%
+    "EIGEN": None,          # 1%
+    "CFG":   None,          # 1%
+    "XION":  None,          # 1%
+    "ORDER": None,          # 1%
+    "MERL":  None,          # 1%
+    "SCR":   None,          # 1%
+    "SWELL": None,          # 1%
+    "PEPPER":100000,
+    "SKY":   None,          # 1%
+    "PONKE": None,          # 1%
+    "MVL":   None,          # 1%
+    "CARV":  None,          # 1%
+    "PUFFER":None,          # 1%
+    "SUNDOG":None,          # 1%
+    "TURBO": None,          # 1%
+    "RAY":   None,          # 1%
+    "SAFE":  None,          # 1%
+    "VIRTUAL":0.1,
+    "DRIFT": 1,
+    "MOVE":  None,          # 1%
+    "F":     None,          # 1%
+    "DEEP":  None,          # 1%
+    "MORPHO":None,          # 1%
+    "MOODENG":None,         # 1%
+    "DBR":   None,          # 1%
+    "GOAT":  1.6,
+    "NIL":   None,          # 1%
+    "ME":    None,          # 1%
+    "INIT":  None,          # 1%
+    "ZRC":   None,          # 1%
+    "IOTA":  None,          # 1%
+    "MONKY": 26800,
+    "PENGU": 5,
+    "ACX":   None,          # 1%
+    "AERO":  None,          # 1%
+    "THE":   None,          # 1%
+    "AMP":   None,          # 1%
+    "VANA":  None,          # 1%
+    "XYO":   None,          # 1%
+    "A8":    None,          # 1%
+    "SONIC": None,          # 1%
+    "WIF":   None,          # 1%
+    "CPOOL": None,          # 1%
+    "IP":    0.0005,
+    "DKA":   None,          # 1%
+    "SOLV":  9,
+    "BLUE":  None,          # 1%
+    "QKC":   None,          # 1%
+    "HP":    None,          # 1%
+    "GAME2": None,          # 1%
+    "ERA":   None,          # 1%
+    "ARDR":  None,          # 1%
+    "BOUNTY":None,          # 1%
+    "SHELL": None,          # 1%
+    "BERA":  None,          # 1%
+    "BIO":   None,          # 1%
+    "PLUME": None,          # 1%
+    "OBT":   None,          # 1%
+    "TRUMP": 0.04,
+    "KERNEL":3.43390191,
+    "COOKIE":None,          # 1%
+    "GNO":   None,          # 1%
+    "VTHO":  None,          # 1%
+    "ANIME": None,          # 1%
+    "RED":   None,          # 1%
+    "LAYER": None,          # 1%
+    "GPS":   None,          # 1%
+    "WCT":   None,          # 1%
+    "FLOCK": None,          # 1%
+    "KAITO": None,          # 1%
+    "BMT":   None,          # 1%
+    "C":     None,          # 1%
+    "SOON":  1.5,
+    "PAXG":  None,          # 1%
+    "XAUT":  None,          # 1%
+    "AVL":   None,          # 1%
+    "B3":    None,          # 1%
+    "COW":   None,          # 1%
+    "WAL":   None,          # 1%
+    "BABY":  None,          # 1%
+    "ES":    None,          # 1%
+    "XTER":  None,          # 1%
+    "NXPC":  None,          # 1%
+    "0G":    None,          # 1%
+    "GRASS": None,          # 1%
+    "ORCA":  None,          # 1%
+    "KMNO":  None,          # 1%
+    "PUMPBTC":None,         # 1%
+    "EPT":   None,          # 1%
+    "HAEDAL":None,          # 1%
+    "PARTI": None,          # 1%
+    "SXT":   None,          # 1%
+    "PROMPT":None,          # 1%
+    "SIGN":  None,          # 1%
+    "BTR":   None,          # 1%
+    "SAHARA":None,          # 1%
+    "SNS":   487,
+    "HEMI":  None,          # 1%
+    "H":     3.44860813,
+    "HOME":  None,          # 1%
+    "LA":    None,          # 1%
+    "SOPH":  None,          # 1%
+    "HYPER": None,          # 1%
+    "PROVE": None,          # 1%
+    "CUDIS": None,          # 1%
+    "FORT":  None,          # 1%
+    "TOSHI": None,          # 1%
+    "HUMA":  None,          # 1%
+    "SPK":   None,          # 1%
+    "USD1":  0.35,          # BNB Chain 기준
+    "BOB":   None,          # 1%
+    "SYRUP": None,          # 1%
+    "NEWT":  None,          # 1%
+    "RESOLV":8,
+    "ALLO":  None,          # 1%
+    "DOOD":  None,          # 1%
+    "TREE":  None,          # 1%
+    "EUL":   None,          # 1%
+    "AVNT":  None,          # 1%
+    "OPEN":  None,          # 1%
+    "PUMP":  None,          # 1%
+    "IRYS":  None,          # 1%
+    "DEXE":  None,          # 1%
+    "SD":    None,          # 1%
+    "BARD":  None,          # 1%
+    "TOWNS": None,          # 1%
+    "MIRA":  None,          # 1%
+    "CAMP":  None,          # 1%
+    "XAN":   None,          # 1%
+    "THQ":   None,          # 1%
+    "POPCAT":None,          # 1%
+    "WLFI":  3.09910198,
+    "2Z":    None,          # 1%
+    "LINEA": None,          # 1%
+    "SAPIEN":None,          # 1%
+    "HOLO":  None,          # 1%
+    "ZKC":   None,          # 1%
+    "ASTER": None,          # 1%
+    "XPL":   None,          # 1%
+    "FF":    None,          # 1%
+    "SOMI":  None,          # 1%
+    "MON":   None,          # 1%
+    "FLUID": None,          # 1%
+    "SUPER": None,          # 1%
+    "IN":    None,          # 1%
+    "EDEN":  None,          # 1%
+    "RECALL":None,          # 1%
+    "USDE":  0.32535353,
+    "ENSO":  None,          # 1%
+    "YB":    None,          # 1%
+    "STABLE":None,          # 1%
+    "ZBT":   None,          # 1%
+    "NOM":   70,
+    "ZORA":  None,          # 1%
+    "SENT":  None,          # 1%
+    "MMT":   None,          # 1%
+    "MET":   None,          # 1%
+    "KITE":  None,          # 1%
+    "TRUST": None,          # 1%
+    "ARIAIP":0.05,
+    "ESP":   None,          # 1%
+    "PIEVERSE":None,        # 1%
+    "CYS":   None,          # 1%
+    "EDGE":  None,          # 1%
+    "SPACE": 7.2,
+    "WET":   None,          # 1%
+    "BREV":  None,          # 1%
+    "KAT":   None,          # 1%
+    "ZKP":   None,          # 1%
+    "ZAMA":  None,          # 1%
+    "GWEI":  None,          # 1%
+    "SKR":   None,          # 1%
+    "LIT":   None,          # 1%
+    "ELSA":  None,          # 1%
+    "BIRB":  None,          # 1%
+    "AZTEC": None,          # 1%
+    "ROBO":  None,          # 1%
+    "BLEND": None,          # 1%
+    "MANTRA":0.05,
+    "MEGA":  0.1,
+    "VVV":   None,          # 1%
+    "BASED": None,          # 1%
+    "CHIP":  None,          # 1%
+    "EDGEX": 0.5,
+    "PRL":   None,          # 1%
+    "PROS":  0.1,
+}
+
+# 업비트 출금 수수료 (주요 코인만, 나머지는 None으로 처리)
+# 업비트는 공식 수수료 페이지 기준 (코인별 고정)
+UPBIT_WITHDRAW_FEE = {
+    "BTC":   0.0005,
+    "ETH":   0.01,
+    "XRP":   1.0,
+    "ADA":   1.0,
+    "SOL":   0.01,
+    "DOGE":  10.0,
+    "DOT":   0.1,
+    "AVAX":  0.01,
+    "LINK":  0.3,
+    "ATOM":  0.01,
+    "UNI":   0.3,
+    "SAND":  10.0,
+    "MANA":  20.0,
+    "XLM":   0.01,
+    "ALGO":  0.01,
+    "BCH":   0.001,
+    "ETC":   0.01,
+    "SHIB":  100000,
+    "MATIC": 1.0,
+    "POL":   1.0,
+    "TRX":   10.0,
+    "BNB":   0.001,
+    "SUI":   0.01,
+    "SEI":   0.1,
+    "NEAR":  0.1,
+    "ARB":   1.0,
+    "OP":    1.0,
+    "PEPE":  200000,
+    "BONK":  50000,
+    "WIF":   1.0,
+}
+
 ALERT_STATE = {}
+
+#################################
+# 출금 수수료 계산 함수
+#################################
+
+def get_withdraw_fee(exchange, coin, price):
+    """
+    출금 수수료를 원화로 반환
+    exchange: 'upbit' or 'bithumb' (송금하는 쪽, 즉 출금하는 거래소)
+    coin: 코인 심볼
+    price: 해당 거래소 현재가 (원화)
+    """
+    if exchange == "bithumb":
+        fee = BITHUMB_WITHDRAW_FEE.get(coin)
+        if fee is None:
+            # 출금 수량의 1% → 코인 1개 기준 0.01개 수수료 → 원화로 price * 0.01
+            return price * 0.01
+        else:
+            return fee * price  # 고정 수수료 (코인 단위) → 원화
+
+    elif exchange == "upbit":
+        fee = UPBIT_WITHDRAW_FEE.get(coin)
+        if fee is None:
+            return 0  # 업비트는 대부분 코인별 고정, 없으면 0으로 처리
+        return fee * price
+
+    return 0
 
 #################################
 # 가격 포맷 함수 (소수점 자동 조정)
@@ -425,7 +949,21 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if upbit_price and bithumb_price:
         gap_pct = (upbit_price - bithumb_price) / bithumb_price * 100
-        gap_line = f"📊 괴리율 : {gap_pct:+.3f}%"
+
+        # 빗썸→업비트 방향 기준 수수료 계산 (출금은 빗썸에서)
+        trade_fee = bithumb_price * FEE_RATE["bithumb"] + upbit_price * FEE_RATE["upbit"]
+        wd_fee_krw = get_withdraw_fee("bithumb", coin, bithumb_price)
+        net = upbit_price - bithumb_price - trade_fee - wd_fee_krw
+
+        # 빗썸 출금 수수료 타입 표시
+        bithumb_fee_raw = BITHUMB_WITHDRAW_FEE.get(coin)
+        fee_type = "1%" if bithumb_fee_raw is None else f"고정 {bithumb_fee_raw}"
+
+        gap_line = (
+            f"📊 괴리율 : {gap_pct:+.3f}%\n"
+            f"💸 순이익(빗→업) : {fmt(net)}원\n"
+            f"🏦 빗썸 출금수수료 : {fee_type} ({fmt(wd_fee_krw)}원)"
+        )
     else:
         gap_line = "📊 괴리율 : 조회 실패"
 
@@ -520,9 +1058,9 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
     results = []
     for coin in upbit:
         if coin in bithumb and bithumb[coin] > 0:
-            gap = (upbit[coin] - bithumb[coin]) / bithumb[coin] * 100
-            if abs(gap) >= threshold:
-                results.append((coin, round(gap, 3)))
+            gap_pct = (upbit[coin] - bithumb[coin]) / bithumb[coin] * 100
+            if abs(gap_pct) >= threshold:
+                results.append((coin, round(gap_pct, 3)))
 
     if not results:
         await send(f"📊 {threshold}% 이상 괴리 코인 없음")
@@ -553,7 +1091,19 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
         if reply_to is None and not is_open:
             continue
 
-        lines.append(f"{coin} : {g:+.3f}% | 빗{b_icon}")
+        # 빗썸→업비트 순이익 계산
+        b_price = bithumb.get(coin, 0)
+        u_price = upbit.get(coin, 0)
+
+        if b_price > 0 and u_price > 0 and g > 0:
+            trade_fee = b_price * FEE_RATE["bithumb"] + u_price * FEE_RATE["upbit"]
+            wd_fee_krw = get_withdraw_fee("bithumb", coin, b_price)
+            net = u_price - b_price - trade_fee - wd_fee_krw
+            net_str = f" | 순익 {fmt(net)}원"
+        else:
+            net_str = ""
+
+        lines.append(f"{coin} : {g:+.3f}% | 빗{b_icon}{net_str}")
 
     if not lines:
         if reply_to is None:
@@ -642,9 +1192,17 @@ async def check_alarms(app):
 
         ALERT_STATE[key] = {"last_sent": now, "active": True, "count": count + 1}
 
-        buy_fee = low * FEE_RATE.get(a["ex_low"], 0)
-        sell_fee = high * FEE_RATE.get(a["ex_high"], 0)
-        net_profit = round(gap - buy_fee - sell_fee, 8)
+        # 수수료 계산: 출금하는 쪽(ex_high)의 출금 수수료 적용
+        trade_fee = low * FEE_RATE.get(a["ex_low"], 0) + high * FEE_RATE.get(a["ex_high"], 0)
+        wd_fee_krw = get_withdraw_fee(a["ex_high"], a["coin"], high)
+        net_profit = round(gap - trade_fee - wd_fee_krw, 2)
+
+        # 빗썸 출금 수수료 타입 표시
+        bithumb_fee_raw = BITHUMB_WITHDRAW_FEE.get(a["coin"])
+        if a["ex_high"] == "bithumb":
+            fee_info = f"출금수수료(빗) : {'1%' if bithumb_fee_raw is None else f'{bithumb_fee_raw} {a[\"coin\"]}'} ({fmt(wd_fee_krw)}원)"
+        else:
+            fee_info = f"출금수수료(업) : {fmt(wd_fee_krw)}원"
 
         try:
             await app.bot.send_message(
@@ -654,7 +1212,8 @@ async def check_alarms(app):
                     f"{a['kr_high']} : {fmt(high)}원\n"
                     f"{a['kr_low']} : {fmt(low)}원\n"
                     f"📈 가격차 : {fmt(gap)}원\n"
-                    f"💸 순이익 : {fmt(net_profit)}원"
+                    f"💸 순이익 : {fmt(net_profit)}원\n"
+                    f"📋 {fee_info}"
                 )
             )
         except Exception as e:
