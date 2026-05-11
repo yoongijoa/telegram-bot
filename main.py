@@ -1091,19 +1091,11 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
         if reply_to is None and not is_open:
             continue
 
-        # 빗썸→업비트 순이익 계산
-        b_price = bithumb.get(coin, 0)
-        u_price = upbit.get(coin, 0)
+        # 빗썸 출금수수료 타입만 표시
+        bithumb_fee_raw = BITHUMB_WITHDRAW_FEE.get(coin)
+        fee_str = "출금1%" if bithumb_fee_raw is None else "출금고정"
 
-        if b_price > 0 and u_price > 0 and g > 0:
-            trade_fee = b_price * FEE_RATE["bithumb"] + u_price * FEE_RATE["upbit"]
-            wd_fee_krw = get_withdraw_fee("bithumb", coin, b_price)
-            net = u_price - b_price - trade_fee - wd_fee_krw
-            net_str = f" | 순익 {fmt(net)}원"
-        else:
-            net_str = ""
-
-        lines.append(f"{coin} : {g:+.3f}% | 빗{b_icon}{net_str}")
+        lines.append(f"{coin} : {g:+.3f}% | 빗{b_icon} | {fee_str}")
 
     if not lines:
         if reply_to is None:
