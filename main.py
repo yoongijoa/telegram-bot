@@ -1199,8 +1199,10 @@ async def check_alarms(app):
 
         # 빗썸 출금 수수료 타입 표시
         bithumb_fee_raw = BITHUMB_WITHDRAW_FEE.get(a["coin"])
+        coin_name = a["coin"]
         if a["ex_high"] == "bithumb":
-            fee_info = f"출금수수료(빗) : {'1%' if bithumb_fee_raw is None else f'{bithumb_fee_raw} {a[\"coin\"]}'} ({fmt(wd_fee_krw)}원)"
+            fee_type_str = "1%" if bithumb_fee_raw is None else f"{bithumb_fee_raw} {coin_name}"
+            fee_info = f"출금수수료(빗) : {fee_type_str} ({fmt(wd_fee_krw)}원)"
         else:
             fee_info = f"출금수수료(업) : {fmt(wd_fee_krw)}원"
 
