@@ -1060,7 +1060,7 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
         if coin in bithumb and bithumb[coin] > 0:
             gap_pct = (upbit[coin] - bithumb[coin]) / bithumb[coin] * 100
             if abs(gap_pct) >= threshold:
-                results.append((coin, round(gap_pct, 3)))
+                results.append((coin, round(gap_pct, 3), upbit[coin], bithumb[coin]))
 
     if not results:
         await send(f"📊 {threshold}% 이상 괴리 코인 없음")
@@ -1072,7 +1072,7 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
     await send("🔒 빗썸 입출금 상태 조회중...")
 
     lines = []
-    for coin, g in top:
+    for coin, g, upbit_price, bithumb_price in top:
         b_dep, b_wd = get_bithumb_wallet_status(coin)
 
         if b_dep is None:
@@ -1095,7 +1095,10 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
         bithumb_fee_raw = BITHUMB_WITHDRAW_FEE.get(coin)
         fee_str = "출금1%" if bithumb_fee_raw is None else "출금고정"
 
-        lines.append(f"{coin} : {g:+.3f}% | 빗{b_icon} | {fee_str}")
+        lines.append(
+            f"{coin} : {g:+.3f}% | 빗{b_icon} | {fee_str}\n"
+            f"  업비트 {fmt(upbit_price)}원 | 빗썸 {fmt(bithumb_price)}원"
+        )
 
     if not lines:
         if reply_to is None:
