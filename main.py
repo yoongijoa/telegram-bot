@@ -5,7 +5,7 @@ import asyncio
 import jwt
 import uuid
 import time as _time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -628,7 +628,7 @@ def save_gap_auto(data):
 #################################
 
 def is_night_time():
-    kst = datetime.utcnow() + timedelta(hours=9)
+    kst = datetime.now(timezone.utc) + timedelta(hours=9)
     h = kst.hour
     return h >= NIGHT_START or h < NIGHT_END
 
