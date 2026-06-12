@@ -755,6 +755,44 @@ def get_upbit_wallet_status(coin):
     except:
         return "unknown"
 
+def get_upbit_wallet_status_all():
+    """업비트 전체 코인 입출금 상태를 한 번의 요청으로 조회 (인증 필요)
+    반환: {코인: wallet_state}
+    wallet_state: working / withdraw_only / deposit_only / paused / unsupported"""
+    try:
+        payload = {
+            "access_key": UPBIT_ACCESS,
+            "nonce": str(uuid.uuid4())
+        }
+        token = jwt.encode(payload, UPBIT_SECRET, algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        r = _SESSION.get(
+            "https://api.upbit.com/v1/status/wallet",
+            headers=headers,
+            proxies=PROXIES,
+            timeout=5
+        )
+        data = r.json()
+        if not isinstance(data, list):
+            return {}
+        return {item["currency"]: item["wallet_state"] for item in data}
+    except:
+        return {}
+
+def upbit_wallet_icon(state):
+    """업비트 wallet_state → (아이콘, 입출금 가능 여부)
+    조회 실패(None)는 ❓로 표시하되 자동알람에서 차단하지 않음"""
+    if state == "working":
+        return "✅", True
+    if state == "withdraw_only":
+        return "⚠️", False   # 입금불가
+    if state == "deposit_only":
+        return "⚠️", False   # 출금불가
+    if state in ("paused", "unsupported"):
+        return "⛔️", False
+    return "❓", True
+
 def get_bithumb_wallet_status(coin):
     try:
         r = _SESSION.get(
@@ -962,11 +1000,25 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"🔍 {coin} 조회중...")
 
-    upbit_price, bithumb_price, (b_dep, b_wd) = await asyncio.gather(
+    upbit_price, bithumb_price, (b_dep, b_wd), upbit_state = await asyncio.gather(
         asyncio.to_thread(get_price, "upbit", coin),
         asyncio.to_thread(get_price, "bithumb", coin),
         asyncio.to_thread(get_bithumb_wallet_status, coin),
+        asyncio.to_thread(get_upbit_wallet_status, coin),
     )
+
+    if upbit_state == "working":
+        upbit_wallet = "✅ 정상"
+    elif upbit_state == "withdraw_only":
+        upbit_wallet = "⚠️ 입금불가"
+    elif upbit_state == "deposit_only":
+        upbit_wallet = "⚠️ 출금불가"
+    elif upbit_state == "paused":
+        upbit_wallet = "⛔️ 입출금 중단"
+    elif upbit_state == "unsupported":
+        upbit_wallet = "⛔️ 입출금 미지원"
+    else:
+        upbit_wallet = "❓ 알 수 없음"
 
     if b_dep is None:
         bithumb_wallet = "❓ 알 수 없음"
@@ -1006,6 +1058,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"업비트 : {fmt(upbit_price) if upbit_price else '조회 실패'}원\n"
         f"빗썸 : {fmt(bithumb_price) if bithumb_price else '조회 실패'}원\n"
         f"{gap_line}\n"
+        f"업비트 입출금 : {upbit_wallet}\n"
         f"빗썸 입출금 : {bithumb_wallet}"
     )
 
@@ -1083,11 +1136,12 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
     if reply_to:
         await send("📊 전체 코인 비교중...")
 
-    # 업비트 가격 + 빗썸 가격 + 빗썸 입출금 상태(전체)를 동시에 조회
-    upbit, bithumb, wallet_all = await asyncio.gather(
+    # 업비트/빗썸 가격 + 양쪽 입출금 상태(전체)를 동시에 조회
+    upbit, bithumb, wallet_all, upbit_wallet_all = await asyncio.gather(
         asyncio.to_thread(get_upbit_all),
         asyncio.to_thread(get_bithumb_all),
         asyncio.to_thread(get_bithumb_wallet_status_all),
+        asyncio.to_thread(get_upbit_wallet_status_all),
     )
 
     if not upbit or not bithumb:
@@ -1125,7 +1179,9 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
             b_icon = "⚠️"
             is_open = False
 
-        if reply_to is None and not is_open:
+        u_icon, u_open = upbit_wallet_icon(upbit_wallet_all.get(coin))
+
+        if reply_to is None and not (is_open and u_open):
             continue
 
         # 빗썸 출금수수료 타입만 표시
@@ -1133,20 +1189,20 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
         fee_str = "출금1%" if bithumb_fee_raw is None else "출금고정"
 
         lines.append(
-            f"{coin} : {g:+.3f}% | 빗{b_icon} | {fee_str}\n"
+            f"{coin} : {g:+.3f}% | 업{u_icon} 빗{b_icon} | {fee_str}\n"
             f"  업비트 {fmt(upbit_price)}원 | 빗썸 {fmt(bithumb_price)}원"
         )
 
     if not lines:
         if reply_to is None:
             return
-        await send("조건 만족 코인 없음 (빗썸 입출금 정상 기준)")
+        await send("조건 만족 코인 없음 (입출금 정상 기준)")
         return
 
     chunk_size = 10
     for i in range(0, len(lines), chunk_size):
         chunk = lines[i:i + chunk_size]
-        header = f"📊 업비트↔빗썸 괴리율 ({threshold}%↑, 빗썸정상만)\n" if i == 0 else ""
+        header = f"📊 업비트↔빗썸 괴리율 ({threshold}%↑)\n" if i == 0 else ""
         await send(header + "\n".join(chunk))
 
 
