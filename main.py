@@ -19,6 +19,9 @@ UPBIT_SECRET = os.getenv("UPBIT_SECRET")
 FIXIE_URL = os.getenv("FIXIE_URL")
 PROXIES = {"http": FIXIE_URL, "https": FIXIE_URL} if FIXIE_URL else {}
 
+# 연결 재사용(커넥션 풀링)으로 요청당 지연 감소
+_SESSION = requests.Session()
+
 ALARM_FILE = "/app/data/alarms.json"
 NIGHT_FILE = "/app/data/night_mode.json"
 GAP_AUTO_FILE = "/app/data/gap_auto.json"
@@ -636,7 +639,7 @@ def is_night_time():
 def get_price(exchange, coin):
     try:
         if exchange == "upbit":
-            r = requests.get(
+            r = _SESSION.get(
                 f"https://api.upbit.com/v1/ticker?markets=KRW-{coin}",
                 timeout=3
             )
@@ -646,7 +649,7 @@ def get_price(exchange, coin):
             price = float(data[0]["trade_price"])
 
         elif exchange == "bithumb":
-            r = requests.get(
+            r = _SESSION.get(
                 f"https://api.bithumb.com/public/ticker/{coin}_KRW",
                 timeout=3
             )
@@ -674,14 +677,14 @@ def get_price(exchange, coin):
 
 def get_upbit_all():
     try:
-        markets = requests.get(
+        markets = _SESSION.get(
             "https://api.upbit.com/v1/market/all",
             timeout=3
         ).json()
 
         krw = [m['market'] for m in markets if m['market'].startswith("KRW-")]
 
-        tickers = requests.get(
+        tickers = _SESSION.get(
             "https://api.upbit.com/v1/ticker",
             params={"markets": ",".join(krw)},
             timeout=5
@@ -700,7 +703,7 @@ def get_upbit_all():
 
 def get_bithumb_all():
     try:
-        r = requests.get(
+        r = _SESSION.get(
             "https://api.bithumb.com/public/ticker/ALL_KRW",
             timeout=5
         )
@@ -739,7 +742,7 @@ def get_upbit_wallet_status(coin):
         token = jwt.encode(payload, UPBIT_SECRET, algorithm="HS256")
         headers = {"Authorization": f"Bearer {token}"}
 
-        r = requests.get(
+        r = _SESSION.get(
             "https://api.upbit.com/v1/status/wallet",
             headers=headers,
             proxies=PROXIES,
@@ -754,7 +757,7 @@ def get_upbit_wallet_status(coin):
 
 def get_bithumb_wallet_status(coin):
     try:
-        r = requests.get(
+        r = _SESSION.get(
             f"https://api.bithumb.com/public/assetsstatus/{coin}",
             timeout=3
         )
@@ -765,6 +768,28 @@ def get_bithumb_wallet_status(coin):
         return None, None
     except:
         return None, None
+
+def get_bithumb_wallet_status_all():
+    """빗썸 전체 코인 입출금 상태를 한 번의 요청으로 조회
+    반환: {코인: (입금상태, 출금상태)}"""
+    try:
+        r = _SESSION.get(
+            "https://api.bithumb.com/public/assetsstatus/ALL",
+            timeout=5
+        )
+        data = r.json()
+        if data.get("status") != "0000":
+            return {}
+
+        result = {}
+        for coin, v in data["data"].items():
+            try:
+                result[coin] = (int(v["deposit_status"]), int(v["withdrawal_status"]))
+            except:
+                continue
+        return result
+    except:
+        return {}
 
 def build_status_msg(upbit_state, b_dep, b_wd):
     msgs = []
@@ -814,7 +839,7 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     coin = coin.upper()
 
     # 한글 포함 여부 체크
-    if any('\uac00' <= c <= '\ud7a3' for c in coin):
+    if any('가' <= c <= '힣' for c in coin):
         await update.message.reply_text(
             f"❌ 코인 심볼은 영문으로 입력해주세요\n"
             f"예) 이더리움 → ETH, 비트코인 → BTC, 리플 → XRP\n"
@@ -835,8 +860,10 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 저장 전 가격 조회 검증
     await update.message.reply_text(f"🔍 {coin} 조회 확인중...")
 
-    high = get_price(EXCHANGE_MAP[ex_high_kr], coin)
-    low = get_price(EXCHANGE_MAP[ex_low_kr], coin)
+    high, low = await asyncio.gather(
+        asyncio.to_thread(get_price, EXCHANGE_MAP[ex_high_kr], coin),
+        asyncio.to_thread(get_price, EXCHANGE_MAP[ex_low_kr], coin),
+    )
 
     if high is None:
         await update.message.reply_text(
@@ -903,7 +930,12 @@ async def delete_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     my = [a for a in alarms if a["chat_id"] == cid]
 
-    idx = int(context.args[0]) - 1
+    try:
+        idx = int(context.args[0]) - 1
+    except:
+        await update.message.reply_text("❌ 번호는 숫자로 입력해주세요\n예) /delete 1")
+        return
+
     if idx < 0 or idx >= len(my):
         return
 
@@ -930,9 +962,11 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"🔍 {coin} 조회중...")
 
-    upbit_price = get_price("upbit", coin)
-    bithumb_price = get_price("bithumb", coin)
-    b_dep, b_wd = get_bithumb_wallet_status(coin)
+    upbit_price, bithumb_price, (b_dep, b_wd) = await asyncio.gather(
+        asyncio.to_thread(get_price, "upbit", coin),
+        asyncio.to_thread(get_price, "bithumb", coin),
+        asyncio.to_thread(get_bithumb_wallet_status, coin),
+    )
 
     if b_dep is None:
         bithumb_wallet = "❓ 알 수 없음"
@@ -1046,10 +1080,15 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
         else:
             await _APP.bot.send_message(chat_id=chat_id, text=text)
 
-    await send("📊 전체 코인 비교중...")
+    if reply_to:
+        await send("📊 전체 코인 비교중...")
 
-    upbit = get_upbit_all()
-    bithumb = get_bithumb_all()
+    # 업비트 가격 + 빗썸 가격 + 빗썸 입출금 상태(전체)를 동시에 조회
+    upbit, bithumb, wallet_all = await asyncio.gather(
+        asyncio.to_thread(get_upbit_all),
+        asyncio.to_thread(get_bithumb_all),
+        asyncio.to_thread(get_bithumb_wallet_status_all),
+    )
 
     if not upbit or not bithumb:
         await send("가격 조회 실패")
@@ -1069,11 +1108,9 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
     results.sort(key=lambda x: abs(x[1]), reverse=True)
     top = results[:20]
 
-    await send("🔒 빗썸 입출금 상태 조회중...")
-
     lines = []
     for coin, g, upbit_price, bithumb_price in top:
-        b_dep, b_wd = get_bithumb_wallet_status(coin)
+        b_dep, b_wd = wallet_all.get(coin, (None, None))
 
         if b_dep is None:
             b_icon = "❓"
@@ -1150,12 +1187,21 @@ async def check_alarms(app):
     now_night = is_night_time()
     now = _time.time()
 
+    # 같은 사이클 내에서 동일 (거래소, 코인) 가격은 1번만 조회
+    price_cache = {}
+
+    async def cached_price(exchange, coin):
+        key = (exchange, coin)
+        if key not in price_cache:
+            price_cache[key] = await asyncio.to_thread(get_price, exchange, coin)
+        return price_cache[key]
+
     for a in alarms:
         key = f"{a['chat_id']}_{a['coin']}_{a['ex_high']}_{a['ex_low']}"
         state = ALERT_STATE.get(key, {"last_sent": 0, "active": False, "count": 0})
 
-        high = get_price(a["ex_high"], a["coin"])
-        low = get_price(a["ex_low"], a["coin"])
+        high = await cached_price(a["ex_high"], a["coin"])
+        low = await cached_price(a["ex_low"], a["coin"])
 
         if high is None or low is None:
             print(f"[가격 조회 실패] {a['coin']} high={high} low={low}")
