@@ -25,6 +25,7 @@ _SESSION = requests.Session()
 ALARM_FILE = "/app/data/alarms.json"
 NIGHT_FILE = "/app/data/night_mode.json"
 GAP_AUTO_FILE = "/app/data/gap_auto.json"
+ALL_FILE = "/app/data/all_alarms.json"
 
 CHECK_INTERVAL = 5
 COOLDOWN_SEC = 300  # 5분 쿨다운
@@ -35,12 +36,25 @@ NIGHT_END = 7
 EXCHANGE_MAP = {
     "업비트": "upbit",
     "빗썸": "bithumb",
+    "코인원": "coinone",
+    "코빗": "korbit",
 }
 
+# 영문코드 → 한글명 (알람 메시지 출력용)
+EX_KR = {v: k for k, v in EXCHANGE_MAP.items()}
+
+# /all 에서 비교할 거래소 (순서 = 메시지 출력 순서)
+ALL_EXCHANGES = ["upbit", "bithumb", "coinone", "korbit"]
+
 # 거래 수수료 (매매)
+# 코인원 · 코빗은 매매 수수료 0원.
+# 나중에 유료로 바뀌면 환경변수로 덮어쓴다 (예: FEE_COINONE=0.002)
+# ※ 매매 수수료가 0이어도 코인 출금 수수료는 따로 나간다 (currencies API에서 실시간 조회)
 FEE_RATE = {
     "upbit": 0.0005,
-    "bithumb": 0.0004
+    "bithumb": 0.0004,
+    "coinone": float(os.getenv("FEE_COINONE", "0")),
+    "korbit": float(os.getenv("FEE_KORBIT", "0")),
 }
 
 # 빗썸 출금 수수료
@@ -542,6 +556,177 @@ UPBIT_WITHDRAW_FEE = {
 ALERT_STATE = {}
 
 #################################
+# 🔄 거래소 통화정보 캐시
+#   코인원/코빗은 출금수수료·입출금상태를 공개 API로 주므로 하드코딩하지 않고 주기적으로 받아온다.
+#   업비트/빗썸의 입출금 상태도 여기서 같이 캐싱해 알람 루프가 매번 네트워크를 타지 않게 한다.
+#   구조: {거래소: {코인: {"dep": bool|None, "wd": bool|None, "fee": float|None}}}
+#################################
+
+CURRENCY_CACHE = {}
+CURRENCY_REFRESH_SEC = 600  # 10분
+
+
+def fetch_coinone_currencies():
+    try:
+        r = _SESSION.get(
+            "https://api.coinone.co.kr/public/v2/currencies",
+            timeout=5
+        )
+        data = r.json()
+        if data.get("result") != "success":
+            return {}
+
+        out = {}
+        for c in data.get("currencies", []):
+            sym = (c.get("symbol") or "").upper()
+            if not sym:
+                continue
+            try:
+                fee = float(c.get("withdrawal_fee"))
+            except (TypeError, ValueError):
+                fee = None
+            out[sym] = {
+                "dep": c.get("deposit_status") == "normal",
+                "wd": c.get("withdraw_status") == "normal",
+                "fee": fee,
+            }
+        return out
+    except:
+        return {}
+
+
+def fetch_korbit_currencies():
+    try:
+        r = _SESSION.get(
+            "https://api.korbit.co.kr/v2/currencies",
+            timeout=5
+        )
+        data = r.json()
+        if not data.get("success"):
+            return {}
+
+        out = {}
+        for c in data.get("data", []):
+            sym = (c.get("name") or "").upper()
+            if not sym:
+                continue
+            try:
+                fee = float(c.get("withdrawalTxFee"))
+            except (TypeError, ValueError):
+                fee = None
+            out[sym] = {
+                "dep": c.get("depositStatus") == "launched",
+                "wd": c.get("withdrawalStatus") == "launched",
+                "fee": fee,
+            }
+        return out
+    except:
+        return {}
+
+
+def fetch_upbit_currencies():
+    """업비트는 출금수수료 공개 API가 없어 입출금 상태만 채운다 (수수료는 기존 테이블 사용)"""
+    try:
+        payload = {
+            "access_key": UPBIT_ACCESS,
+            "nonce": str(uuid.uuid4())
+        }
+        token = jwt.encode(payload, UPBIT_SECRET, algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        r = _SESSION.get(
+            "https://api.upbit.com/v1/status/wallet",
+            headers=headers,
+            proxies=PROXIES,
+            timeout=5
+        )
+
+        out = {}
+        for item in r.json():
+            sym = item.get("currency")
+            state = item.get("wallet_state")
+            if not sym:
+                continue
+            out[sym.upper()] = {
+                "dep": state in ("working", "deposit_only"),
+                "wd": state in ("working", "withdraw_only"),
+                "fee": UPBIT_WITHDRAW_FEE.get(sym.upper()),
+            }
+        return out
+    except:
+        return {}
+
+
+def fetch_bithumb_currencies():
+    """빗썸도 출금수수료 공개 API가 없어 입출금 상태만 채운다 (수수료는 기존 테이블 사용)"""
+    try:
+        r = _SESSION.get(
+            "https://api.bithumb.com/public/assetsstatus/ALL",
+            timeout=5
+        )
+        data = r.json()
+        if data.get("status") != "0000":
+            return {}
+
+        out = {}
+        for sym, v in data.get("data", {}).items():
+            try:
+                dep = int(v["deposit_status"])
+                wd = int(v["withdrawal_status"])
+            except:
+                continue
+            out[sym.upper()] = {
+                "dep": dep == 1,
+                "wd": wd == 1,
+                "fee": BITHUMB_WITHDRAW_FEE.get(sym.upper()),
+            }
+        return out
+    except:
+        return {}
+
+
+CURRENCY_FETCHERS = {
+    "upbit": fetch_upbit_currencies,
+    "bithumb": fetch_bithumb_currencies,
+    "coinone": fetch_coinone_currencies,
+    "korbit": fetch_korbit_currencies,
+}
+
+
+def refresh_currency_cache():
+    """거래소별 통화정보 갱신. 실패한 거래소는 직전 캐시를 그대로 유지한다."""
+    for ex, fetcher in CURRENCY_FETCHERS.items():
+        try:
+            data = fetcher()
+        except Exception as e:
+            print(f"[통화정보 조회 오류] {ex} → {e}")
+            continue
+        if data:
+            CURRENCY_CACHE[ex] = data
+        else:
+            print(f"[통화정보 조회 실패] {ex} (기존 캐시 유지)")
+
+
+def get_currency_info(exchange, coin):
+    """캐시에서만 읽는다 (네트워크 호출 없음). 없으면 None"""
+    return CURRENCY_CACHE.get(exchange, {}).get(coin.upper())
+
+
+def get_wallet_flags(exchange, coin):
+    """반환: (입금가능, 출금가능). 정보 없으면 (None, None)"""
+    info = get_currency_info(exchange, coin)
+    if not info:
+        return None, None
+    return info.get("dep"), info.get("wd")
+
+
+def flag_icon(ok):
+    """입금가능/출금가능 단일 플래그를 아이콘으로"""
+    if ok is None:
+        return "❓"
+    return "✅" if ok else "⛔️"
+
+#################################
 # 출금 수수료 계산 함수
 #################################
 
@@ -566,16 +751,38 @@ def get_withdraw_fee(exchange, coin, price):
             return 0  # 업비트는 대부분 코인별 고정, 없으면 0으로 처리
         return fee * price
 
+    elif exchange in ("coinone", "korbit"):
+        # 두 거래소는 공개 API가 코인 단위 고정 출금수수료를 직접 알려준다
+        info = get_currency_info(exchange, coin)
+        if not info or info.get("fee") is None:
+            return 0
+        return info["fee"] * price
+
     return 0
+
+
+def has_withdraw_fee_data(exchange, coin):
+    """출금수수료를 실제로 알고 있는지 여부.
+    모를 때 get_withdraw_fee()가 0을 반환하므로, 순이익이 부풀려 보이는 걸 경고하는 데 쓴다."""
+    if exchange == "bithumb":
+        return coin in BITHUMB_WITHDRAW_FEE
+    if exchange == "upbit":
+        return UPBIT_WITHDRAW_FEE.get(coin) is not None
+    if exchange in ("coinone", "korbit"):
+        info = get_currency_info(exchange, coin)
+        return bool(info) and info.get("fee") is not None
+    return False
 
 #################################
 # 가격 포맷 함수 (소수점 자동 조정)
 #################################
 
 def fmt(n):
-    if n >= 100:
+    # 음수(순이익 마이너스)도 자릿수가 맞도록 크기는 절댓값으로 판단
+    a = abs(n)
+    if a >= 100:
         return f"{n:,.0f}"
-    elif n >= 1:
+    elif a >= 1:
         return f"{n:,.2f}"
     else:
         return f"{n:,.4f}"
@@ -623,6 +830,18 @@ def save_gap_auto(data):
     with open(GAP_AUTO_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def load_all_alarms():
+    try:
+        with open(ALL_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_all_alarms(data):
+    ensure_data_dir()
+    with open(ALL_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
 #################################
 # 🇰🇷 한국시간 기준 밤 체크
 #################################
@@ -659,6 +878,39 @@ def get_price(exchange, coin):
                 return None
 
             price = float(data["data"]["closing_price"])
+
+        elif exchange == "coinone":
+            r = _SESSION.get(
+                f"https://api.coinone.co.kr/public/v2/ticker_new/KRW/{coin}",
+                timeout=3
+            )
+            data = r.json()
+
+            if data.get("result") != "success":
+                return None
+
+            tickers = data.get("tickers") or []
+            if not tickers:
+                return None
+
+            price = float(tickers[0]["last"])
+
+        elif exchange == "korbit":
+            r = _SESSION.get(
+                "https://api.korbit.co.kr/v2/tickers",
+                params={"symbol": f"{coin.lower()}_krw"},
+                timeout=3
+            )
+            data = r.json()
+
+            if not data.get("success"):
+                return None
+
+            rows = data.get("data") or []
+            if not rows:
+                return None
+
+            price = float(rows[0]["close"])
 
         else:
             return None
@@ -723,6 +975,63 @@ def get_bithumb_all():
 
             if price > 0:
                 prices[coin] = price
+
+        return prices
+
+    except:
+        return {}
+
+def get_coinone_all():
+    try:
+        r = _SESSION.get(
+            "https://api.coinone.co.kr/public/v2/ticker_new/KRW",
+            params={"additional_data": "false"},
+            timeout=5
+        )
+        data = r.json()
+
+        if data.get("result") != "success":
+            return {}
+
+        prices = {}
+        for t in data.get("tickers", []):
+            sym = (t.get("target_currency") or "").upper()
+            if not sym:
+                continue
+            try:
+                price = float(t["last"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if price > 0:
+                prices[sym] = price
+
+        return prices
+
+    except:
+        return {}
+
+def get_korbit_all():
+    try:
+        r = _SESSION.get(
+            "https://api.korbit.co.kr/v2/tickers",
+            timeout=5
+        )
+        data = r.json()
+
+        if not data.get("success"):
+            return {}
+
+        prices = {}
+        for t in data.get("data", []):
+            sym = t.get("symbol") or ""
+            if not sym.endswith("_krw"):
+                continue
+            try:
+                price = float(t["close"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if price > 0:
+                prices[sym[:-4].upper()] = price
 
         return prices
 
@@ -818,7 +1127,16 @@ def build_status_msg(upbit_state, b_dep, b_wd):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📌 사용법\n"
+        "\n"
+        "🌐 4개 거래소 전체 비교 (업비트·빗썸·코인원·코빗)\n"
+        "/all ETH 5000  ← 어디든 5,000원 벌어지면 알람\n"
+        "/all list      ← 목록\n"
+        "/all delete 1  ← 삭제\n"
+        "/all off       ← 전부 해제\n"
+        "\n"
+        "🎯 거래소 지정 비교\n"
         "/set 업비트 빗썸 ETH 1000\n"
+        "  (업비트/빗썸/코인원/코빗 중 두 곳)\n"
         "/list\n"
         "/delete 번호\n"
         "/night\n"
@@ -848,7 +1166,10 @@ async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if ex_high_kr not in EXCHANGE_MAP or ex_low_kr not in EXCHANGE_MAP:
-        await update.message.reply_text("거래소 이름 오류\n예) 업비트, 빗썸")
+        await update.message.reply_text(
+            "거래소 이름 오류\n"
+            "사용 가능 : 업비트, 빗썸, 코인원, 코빗"
+        )
         return
 
     try:
@@ -909,16 +1230,27 @@ async def list_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alarms = load_alarms()
     cid = update.effective_chat.id
     my = [a for a in alarms if a["chat_id"] == cid]
+    my_all = [a for a in load_all_alarms() if a["chat_id"] == cid]
 
-    if not my:
+    if not my and not my_all:
         await update.message.reply_text("알람 없음")
         return
 
     night = load_night().get(str(cid), False)
 
     msg = f"📌 내 알람 (밤모드:{'ON' if night else 'OFF'})\n"
-    for i, a in enumerate(my):
-        msg += f"{i+1}. {a['kr_high']}→{a['kr_low']} {a['coin']} {a['diff']}원\n"
+
+    if my:
+        for i, a in enumerate(my):
+            msg += f"{i+1}. {a['kr_high']}→{a['kr_low']} {a['coin']} {a['diff']}원\n"
+    else:
+        msg += "(거래소 지정 알람 없음)\n"
+
+    if my_all:
+        msg += "\n🌐 /all 알람 (4개 거래소 전체)\n"
+        for i, a in enumerate(my_all):
+            msg += f"{i+1}. {a['coin']} {fmt(a['diff'])}원\n"
+        msg += "삭제는 /all delete 번호"
 
     await update.message.reply_text(msg)
 
@@ -1151,6 +1483,291 @@ async def _send_gap_result(chat_id, threshold, reply_to=None):
 
 
 #################################
+# 🌐 /all : 4개 거래소 전체 비교 알람
+#################################
+
+async def fetch_all_prices(coin):
+    """4개 거래소 현재가를 동시에 조회. 조회 실패한 거래소는 빠진 dict 반환"""
+    results = await asyncio.gather(
+        *[asyncio.to_thread(get_price, ex, coin) for ex in ALL_EXCHANGES]
+    )
+    return {ex: p for ex, p in zip(ALL_EXCHANGES, results) if p}
+
+
+BOARD_FETCHERS = {
+    "upbit": get_upbit_all,
+    "bithumb": get_bithumb_all,
+    "coinone": get_coinone_all,
+    "korbit": get_korbit_all,
+}
+
+
+async def get_all_boards():
+    """4개 거래소 전체 시세판을 동시에 조회.
+    감시 코인이 몇 개든 거래소당 요청 1번으로 끝내기 위한 것."""
+    results = await asyncio.gather(
+        *[asyncio.to_thread(BOARD_FETCHERS[ex]) for ex in ALL_EXCHANGES]
+    )
+    return dict(zip(ALL_EXCHANGES, results))
+
+
+def build_all_alarm_msg(coin, prices, hi_ex, lo_ex, gap):
+    hi_kr = EX_KR[hi_ex]
+    lo_kr = EX_KR[lo_ex]
+
+    # 코인은 비싼 거래소에서 출금 → 싼 거래소로 입금 (기존 /set 알람과 같은 방향 기준)
+    trade_fee = prices[lo_ex] * FEE_RATE.get(lo_ex, 0) + prices[hi_ex] * FEE_RATE.get(hi_ex, 0)
+    wd_fee_krw = get_withdraw_fee(hi_ex, coin, prices[hi_ex])
+    net_profit = round(gap - trade_fee - wd_fee_krw, 2)
+
+    lines = [
+        f"🚨 차익 발생 [{coin}]",
+        f"📈 {hi_kr} {lo_kr} {fmt(gap)}원",
+        "",
+    ]
+
+    for ex in ALL_EXCHANGES:
+        if ex not in prices:
+            lines.append(f"{EX_KR[ex]} : 조회 실패")
+            continue
+        if ex == hi_ex:
+            tag = " ⬆️ 최고"
+        elif ex == lo_ex:
+            tag = " ⬇️ 최저"
+        else:
+            tag = ""
+        lines.append(f"{EX_KR[ex]} : {fmt(prices[ex])}원{tag}")
+
+    dep_ok, _ = get_wallet_flags(lo_ex, coin)
+    _, wd_ok = get_wallet_flags(hi_ex, coin)
+
+    lines.append("")
+    lines.append(f"💸 순이익 : {fmt(net_profit)}원")
+
+    if has_withdraw_fee_data(hi_ex, coin):
+        lines.append(f"📋 출금수수료({hi_kr}) : {fmt(wd_fee_krw)}원")
+    else:
+        lines.append(f"📋 출금수수료({hi_kr}) : ❓ 미확인 (순이익에 미반영)")
+
+    lines.append(
+        f"🔒 {hi_kr} 출금 {flag_icon(wd_ok)} | {lo_kr} 입금 {flag_icon(dep_ok)}"
+    )
+
+    return "\n".join(lines)
+
+
+ALL_USAGE = (
+    "📌 /all 사용법\n"
+    "/all ETH 5000\n"
+    "  → 업비트·빗썸·코인원·코빗 중\n"
+    "     어디든 5,000원 이상 벌어지면 알람\n"
+    "\n"
+    "/all list      ← 내 /all 알람 목록\n"
+    "/all delete 1  ← 번호로 삭제\n"
+    "/all off       ← 전부 해제"
+)
+
+
+async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    cid = update.effective_chat.id
+
+    sub = args[0].lower() if args else ""
+
+    # /all list
+    if sub == "list":
+        my = [a for a in load_all_alarms() if a["chat_id"] == cid]
+        if not my:
+            await update.message.reply_text("/all 알람 없음")
+            return
+        night = load_night().get(str(cid), False)
+        msg = f"🌐 내 /all 알람 (밤모드:{'ON' if night else 'OFF'})\n"
+        for i, a in enumerate(my):
+            msg += f"{i+1}. {a['coin']} {fmt(a['diff'])}원\n"
+        await update.message.reply_text(msg)
+        return
+
+    # /all delete N
+    if sub in ("delete", "del"):
+        if len(args) < 2:
+            await update.message.reply_text("❌ /all delete 1")
+            return
+        alarms = load_all_alarms()
+        my = [a for a in alarms if a["chat_id"] == cid]
+        try:
+            idx = int(args[1]) - 1
+        except:
+            await update.message.reply_text("❌ 번호는 숫자로 입력해주세요\n예) /all delete 1")
+            return
+        if idx < 0 or idx >= len(my):
+            await update.message.reply_text("❌ 그런 번호 없음 (/all list 로 확인)")
+            return
+        removed = my[idx]
+        alarms.remove(removed)
+        save_all_alarms(alarms)
+        ALERT_STATE.pop(f"{cid}_{removed['coin']}_ALL", None)
+        await update.message.reply_text(f"🗑 {removed['coin']} /all 알람 삭제 완료")
+        return
+
+    # /all off
+    if sub == "off":
+        alarms = load_all_alarms()
+        mine = [a for a in alarms if a["chat_id"] == cid]
+        if not mine:
+            await update.message.reply_text("/all 알람 없음")
+            return
+        for a in mine:
+            ALERT_STATE.pop(f"{cid}_{a['coin']}_ALL", None)
+        save_all_alarms([a for a in alarms if a["chat_id"] != cid])
+        await update.message.reply_text(f"🔕 /all 알람 {len(mine)}개 전부 해제")
+        return
+
+    # /all ETH 5000
+    if len(args) != 2:
+        await update.message.reply_text(ALL_USAGE)
+        return
+
+    coin = args[0].upper()
+
+    if any('가' <= c <= '힣' for c in coin):
+        await update.message.reply_text(
+            "❌ 코인 심볼은 영문으로 입력해주세요\n"
+            "예) 이더리움 → ETH, 비트코인 → BTC, 리플 → XRP"
+        )
+        return
+
+    try:
+        diff = float(args[1])
+        if diff <= 0:
+            raise ValueError
+    except:
+        await update.message.reply_text("❌ 차익은 0보다 큰 숫자로 입력해주세요\n예) /all ETH 5000")
+        return
+
+    await update.message.reply_text(f"🔍 {coin} 4개 거래소 조회중...")
+
+    prices = await fetch_all_prices(coin)
+
+    if len(prices) < 2:
+        await update.message.reply_text(
+            f"❌ {coin} 은 비교 가능한 거래소가 부족합니다\n"
+            f"조회 성공 : {', '.join(EX_KR[e] for e in prices) if prices else '없음'}\n"
+            f"최소 2개 거래소에 상장되어 있어야 합니다"
+        )
+        return
+
+    user = update.effective_user
+    username = f"@{user.username}" if user.username else user.full_name
+
+    alarms = load_all_alarms()
+
+    # 같은 방에서 같은 코인은 중복 등록하지 않고 기준가만 갱신
+    existing = next(
+        (a for a in alarms if a["chat_id"] == cid and a["coin"] == coin),
+        None
+    )
+    if existing:
+        existing["diff"] = diff
+        existing["username"] = username
+        head = f"♻️ {coin} /all 알람 기준 변경"
+    else:
+        alarms.append({
+            "chat_id": cid,
+            "username": username,
+            "coin": coin,
+            "diff": diff,
+        })
+        head = f"✅ {coin} /all 알람 등록 완료"
+
+    save_all_alarms(alarms)
+    ALERT_STATE.pop(f"{cid}_{coin}_ALL", None)
+
+    hi_ex = max(prices, key=prices.get)
+    lo_ex = min(prices, key=prices.get)
+    now_gap = prices[hi_ex] - prices[lo_ex]
+
+    lines = [head, f"조건 : 4개 거래소 중 최대 {fmt(diff)}원 이상 차이", ""]
+    for ex in ALL_EXCHANGES:
+        if ex in prices:
+            lines.append(f"{EX_KR[ex]} : {fmt(prices[ex])}원")
+        else:
+            lines.append(f"{EX_KR[ex]} : 조회 실패 (미상장)")
+    lines.append("")
+    lines.append(f"📊 현재 최대차 : {EX_KR[hi_ex]} {EX_KR[lo_ex]} {fmt(now_gap)}원")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def check_all_alarms(app):
+    alarms = load_all_alarms()
+    if not alarms:
+        return
+
+    night_data = load_night()
+    now_night = is_night_time()
+    now = _time.time()
+
+    # 감시 코인이 몇 개든 거래소당 1번씩만 조회
+    board = await get_all_boards()
+
+    if sum(1 for v in board.values() if v) < 2:
+        print("[/all 시세판 조회 실패] 응답한 거래소 2개 미만 → 이번 사이클 건너뜀")
+        return
+
+    for a in alarms:
+        coin = a["coin"]
+        key = f"{a['chat_id']}_{coin}_ALL"
+
+        prices = {}
+        for ex in ALL_EXCHANGES:
+            p = board.get(ex, {}).get(coin)
+            if p:
+                prices[ex] = p
+
+        if len(prices) < 2:
+            print(f"[/all 가격 조회 실패] {coin} → 응답 {len(prices)}개")
+            continue
+
+        hi_ex = max(prices, key=prices.get)
+        lo_ex = min(prices, key=prices.get)
+        gap = round(prices[hi_ex] - prices[lo_ex], 8)
+
+        threshold = a["diff"]
+        if night_data.get(str(a["chat_id"]), False) and now_night:
+            threshold *= 2
+
+        # 차익 사라지면 완전 리셋
+        if gap < threshold:
+            ALERT_STATE[key] = {"last_sent": 0, "count": 0, "pair": None}
+            continue
+
+        state = ALERT_STATE.get(key, {"last_sent": 0, "count": 0, "pair": None})
+        pair = f"{hi_ex}>{lo_ex}"
+        count = state.get("count", 0)
+        last_sent = state.get("last_sent", 0)
+
+        # 최고↔최저 거래소 조합이 바뀌면 새로운 상황이므로 카운트 리셋
+        if state.get("pair") != pair:
+            count = 0
+
+        # 2번 미만이면 바로 전송, 이후엔 쿨다운
+        if count >= 2:
+            if now - last_sent < COOLDOWN_SEC:
+                continue
+            count = 0
+
+        ALERT_STATE[key] = {"last_sent": now, "count": count + 1, "pair": pair}
+
+        try:
+            await app.bot.send_message(
+                chat_id=a["chat_id"],
+                text=build_all_alarm_msg(coin, prices, hi_ex, lo_ex, gap)
+            )
+        except Exception as e:
+            print(f"[/all 알람 전송 실패] {coin} → {e}")
+
+
+#################################
 # 👥 사용자 목록 조회 (관리자용)
 #################################
 
@@ -1268,7 +1885,23 @@ async def alarm_loop(app):
             await check_alarms(app)
         except Exception as e:
             print(f"[알람 루프 오류] {e}")
+
+        try:
+            await check_all_alarms(app)
+        except Exception as e:
+            print(f"[/all 알람 루프 오류] {e}")
+
         await asyncio.sleep(CHECK_INTERVAL)
+
+
+async def currency_refresh_loop():
+    """거래소 통화정보(입출금 상태 · 출금수수료) 주기 갱신"""
+    while True:
+        await asyncio.sleep(CURRENCY_REFRESH_SEC)
+        try:
+            await asyncio.to_thread(refresh_currency_cache)
+        except Exception as e:
+            print(f"[통화정보 갱신 루프 오류] {e}")
 
 
 async def gap_auto_loop():
@@ -1339,10 +1972,16 @@ def main():
     app.add_handler(CommandHandler("gap", gap_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
+    app.add_handler(CommandHandler("all", all_cmd))
 
     async def start(app):
+        # 알람 루프가 캐시를 바로 쓸 수 있도록 통화정보를 먼저 채운다
+        await asyncio.to_thread(refresh_currency_cache)
+        print(f"[통화정보 캐시] {', '.join(f'{k}:{len(v)}' for k, v in CURRENCY_CACHE.items())}")
+
         asyncio.create_task(alarm_loop(app))
         asyncio.create_task(gap_auto_loop())
+        asyncio.create_task(currency_refresh_loop())
 
     app.post_init = start
     app.run_polling(drop_pending_updates=True)
