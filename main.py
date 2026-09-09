@@ -1549,9 +1549,16 @@ def build_all_alarm_msg(coin, prices, hi_ex, lo_ex, gap):
     else:
         lines.append(f"📋 출금수수료({hi_kr}) : ❓ 미확인 (순이익에 미반영)")
 
-    lines.append(
-        f"🔒 {hi_kr} 출금 {flag_icon(wd_ok)} | {lo_kr} 입금 {flag_icon(dep_ok)}"
-    )
+    # 상태를 모르는 거래소(업비트처럼 API 키가 없는 경우)는 아예 표시하지 않는다.
+    # 모른다고 ✅ 를 붙이면 출금 막힌 걸 열린 것처럼 보여주게 되므로 생략만 한다.
+    parts = []
+    if wd_ok is not None:
+        parts.append(f"{hi_kr} 출금 {flag_icon(wd_ok)}")
+    if dep_ok is not None:
+        parts.append(f"{lo_kr} 입금 {flag_icon(dep_ok)}")
+
+    if parts:
+        lines.append("🔒 " + " | ".join(parts))
 
     return "\n".join(lines)
 
