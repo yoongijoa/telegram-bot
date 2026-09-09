@@ -794,53 +794,56 @@ def fmt(n):
 def ensure_data_dir():
     os.makedirs("/app/data", exist_ok=True)
 
-def load_alarms():
+
+def _load_json(path, default):
+    """읽기 실패 이유를 구분한다.
+    파일 없음 = 정상(첫 실행) / 파싱 실패 = 손상이므로 로그를 남긴다."""
     try:
-        with open(ALARM_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
-        return []
+    except FileNotFoundError:
+        return default
+    except Exception as e:
+        print(f"[⚠️ 파일 손상] {path} → {e} (기본값으로 시작)")
+        return default
+
+
+def _save_json(path, data):
+    """임시 파일에 먼저 쓰고 통째로 교체(os.replace)한다.
+    "w" 로 바로 열면 파일이 먼저 비워지므로, 쓰는 도중 컨테이너가 죽으면
+    반쪽짜리 JSON이 남아 등록해둔 알람이 통째로 날아간다."""
+    ensure_data_dir()
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)   # 같은 파일시스템 내 교체는 원자적
+
+
+def load_alarms():
+    return _load_json(ALARM_FILE, [])
 
 def save_alarms(data):
-    ensure_data_dir()
-    with open(ALARM_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _save_json(ALARM_FILE, data)
 
 def load_night():
-    try:
-        with open(NIGHT_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+    return _load_json(NIGHT_FILE, {})
 
 def save_night(data):
-    ensure_data_dir()
-    with open(NIGHT_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _save_json(NIGHT_FILE, data)
 
 def load_gap_auto():
-    try:
-        with open(GAP_AUTO_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+    return _load_json(GAP_AUTO_FILE, {})
 
 def save_gap_auto(data):
-    ensure_data_dir()
-    with open(GAP_AUTO_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _save_json(GAP_AUTO_FILE, data)
 
 def load_all_alarms():
-    try:
-        with open(ALL_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return []
+    return _load_json(ALL_FILE, [])
 
 def save_all_alarms(data):
-    ensure_data_dir()
-    with open(ALL_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _save_json(ALL_FILE, data)
 
 #################################
 # 🇰🇷 한국시간 기준 밤 체크
@@ -1981,16 +1984,30 @@ def main():
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
 
+    bg_tasks = []
+
     async def start(app):
         # 알람 루프가 캐시를 바로 쓸 수 있도록 통화정보를 먼저 채운다
         await asyncio.to_thread(refresh_currency_cache)
         print(f"[통화정보 캐시] {', '.join(f'{k}:{len(v)}' for k, v in CURRENCY_CACHE.items())}")
 
-        asyncio.create_task(alarm_loop(app))
-        asyncio.create_task(gap_auto_loop())
-        asyncio.create_task(currency_refresh_loop())
+        bg_tasks.append(asyncio.create_task(alarm_loop(app), name="alarm_loop"))
+        bg_tasks.append(asyncio.create_task(gap_auto_loop(), name="gap_auto_loop"))
+        bg_tasks.append(asyncio.create_task(currency_refresh_loop(), name="currency_refresh_loop"))
+
+    async def stop(app):
+        # 컨테이너 종료 시 무한루프 3개를 명시적으로 정리한다.
+        # 안 하면 "Task was destroyed but it is pending!" 경고가 뜨고,
+        # 파일 저장 중이던 루프가 중간에 끊길 수 있다.
+        for t in bg_tasks:
+            t.cancel()
+        if bg_tasks:
+            await asyncio.gather(*bg_tasks, return_exceptions=True)
+        bg_tasks.clear()
+        print("[종료] 백그라운드 루프 정리 완료")
 
     app.post_init = start
+    app.post_stop = stop
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
