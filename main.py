@@ -26,6 +26,7 @@ ALARM_FILE = "/app/data/alarms.json"
 NIGHT_FILE = "/app/data/night_mode.json"
 GAP_AUTO_FILE = "/app/data/gap_auto.json"
 ALL_FILE = "/app/data/all_alarms.json"
+WALLET_FILE = "/app/data/wallet_watch.json"
 
 CHECK_INTERVAL = 5
 COOLDOWN_SEC = 300  # 5분 쿨다운
@@ -563,7 +564,8 @@ ALERT_STATE = {}
 #################################
 
 CURRENCY_CACHE = {}
-CURRENCY_REFRESH_SEC = 600  # 10분
+CURRENCY_REFRESH_SEC = 600       # 평소 10분
+WALLET_WATCH_REFRESH_SEC = 60    # /open 감시가 걸려 있으면 1분
 
 
 def fetch_coinone_currencies():
@@ -844,6 +846,12 @@ def load_all_alarms():
 
 def save_all_alarms(data):
     _save_json(ALL_FILE, data)
+
+def load_wallet_watch():
+    return _load_json(WALLET_FILE, [])
+
+def save_wallet_watch(data):
+    _save_json(WALLET_FILE, data)
 
 #################################
 # 🇰🇷 한국시간 기준 밤 체크
@@ -1137,6 +1145,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/all delete 1  ← 삭제\n"
         "/all off       ← 전부 해제\n"
         "\n"
+        """
+🔓 출금 풀림 감시
+/open SAND        ← 4개 거래소 전부
+/open SAND 코인원  ← 특정 거래소만
+/open list        ← 목록
+/open delete 1    ← 삭제
+/open off         ← 전부 해제
+"""
         "🎯 거래소 지정 비교\n"
         "/set 업비트 빗썸 ETH 1000\n"
         "  (업비트/빗썸/코인원/코빗 중 두 곳)\n"
@@ -1778,6 +1794,220 @@ async def check_all_alarms(app):
 
 
 #################################
+# 🔓 /open : 출금 풀림 감시
+#################################
+
+NL = chr(10)
+
+OPEN_USAGE = """📌 /open 사용법 (출금 막힌 코인이 풀리면 알람)
+
+/open SAND        ← 4개 거래소 전부 감시
+/open SAND 코인원  ← 코인원만 감시
+
+/open list        ← 감시 목록
+/open delete 1    ← 삭제
+/open off         ← 전부 해제"""
+
+
+def wd_text(ok):
+    return "✅ 출금 가능" if ok else "⛔️ 출금 막힘"
+
+
+async def open_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    cid = update.effective_chat.id
+    sub = args[0].lower() if args else ""
+
+    if sub == "list":
+        my = [w for w in load_wallet_watch() if w["chat_id"] == cid]
+        if not my:
+            await update.message.reply_text("출금 감시 없음")
+            return
+        rows = ["🔓 출금 감시 목록"]
+        for i, w in enumerate(my):
+            names = ", ".join(EX_KR[e] for e in w["exchanges"])
+            opened = [EX_KR[e] for e, v in w.get("last", {}).items() if v]
+            tail = f" (현재 열림: {', '.join(opened)})" if opened else ""
+            rows.append(f"{i+1}. {w['coin']} — {names}{tail}")
+        await update.message.reply_text(NL.join(rows))
+        return
+
+    if sub in ("delete", "del"):
+        if len(args) < 2:
+            await update.message.reply_text("❌ /open delete 1")
+            return
+        watches = load_wallet_watch()
+        my = [w for w in watches if w["chat_id"] == cid]
+        try:
+            idx = int(args[1]) - 1
+        except:
+            await update.message.reply_text("❌ 번호는 숫자로 입력해주세요 (예: /open delete 1)")
+            return
+        if idx < 0 or idx >= len(my):
+            await update.message.reply_text("❌ 그런 번호 없음 (/open list 로 확인)")
+            return
+        removed = my[idx]
+        watches.remove(removed)
+        save_wallet_watch(watches)
+        await update.message.reply_text(f"🗑 {removed['coin']} 출금 감시 삭제 완료")
+        return
+
+    if sub == "off":
+        watches = load_wallet_watch()
+        mine = [w for w in watches if w["chat_id"] == cid]
+        if not mine:
+            await update.message.reply_text("출금 감시 없음")
+            return
+        save_wallet_watch([w for w in watches if w["chat_id"] != cid])
+        await update.message.reply_text(f"🔕 출금 감시 {len(mine)}개 전부 해제")
+        return
+
+    if not args or len(args) > 2:
+        await update.message.reply_text(OPEN_USAGE)
+        return
+
+    coin = args[0].upper()
+
+    if any("가" <= c <= "힣" for c in coin):
+        await update.message.reply_text(
+            "❌ 코인 심볼은 영문으로 입력해주세요 (예: 샌드박스 → SAND)"
+        )
+        return
+
+    if len(args) == 2:
+        kr = args[1]
+        if kr not in EXCHANGE_MAP:
+            await update.message.reply_text(
+                "거래소 이름 오류 — 사용 가능 : 업비트, 빗썸, 코인원, 코빗"
+            )
+            return
+        targets = [EXCHANGE_MAP[kr]]
+    else:
+        targets = list(ALL_EXCHANGES)
+
+    # 현재 상태를 알 수 있는 거래소만 감시 대상으로 삼는다
+    known = {}
+    for ex in targets:
+        info = get_currency_info(ex, coin)
+        if info:
+            known[ex] = bool(info["wd"])
+
+    if not known:
+        await update.message.reply_text(
+            f"❌ {coin} 의 입출금 정보를 가져올 수 없습니다"
+            + NL
+            + f"대상 : {', '.join(EX_KR[e] for e in targets)}"
+            + NL
+            + "미상장이거나 해당 거래소 정보 조회가 안 되는 상태입니다"
+        )
+        return
+
+    watches = load_wallet_watch()
+    existing = next(
+        (w for w in watches if w["chat_id"] == cid and w["coin"] == coin),
+        None
+    )
+
+    user = update.effective_user
+    username = f"@{user.username}" if user.username else user.full_name
+
+    if existing:
+        existing["exchanges"] = list(known)
+        existing["last"] = known
+        existing["username"] = username
+        head = f"♻️ {coin} 출금 감시 갱신"
+    else:
+        watches.append({
+            "chat_id": cid,
+            "username": username,
+            "coin": coin,
+            "exchanges": list(known),
+            "last": known,
+        })
+        head = f"🔓 {coin} 출금 감시 시작"
+
+    save_wallet_watch(watches)
+
+    rows = [head, ""]
+    for ex in ALL_EXCHANGES:
+        if ex in known:
+            rows.append(f"{EX_KR[ex]} : {wd_text(known[ex])}")
+
+    skipped = [EX_KR[e] for e in targets if e not in known]
+    if skipped:
+        rows.append("")
+        rows.append(f"⚠️ 정보 없어 제외 : {', '.join(skipped)}")
+
+    rows.append("")
+    if all(known.values()):
+        rows.append("이미 전부 열려 있습니다. 다시 막히면 알려드립니다.")
+    else:
+        rows.append("풀리는 즉시 알려드립니다 (1분 간격 확인)")
+
+    await update.message.reply_text(NL.join(rows))
+
+
+async def check_wallet_watch(app):
+    """통화정보 갱신 직후 호출. 출금 가능 여부가 뒤집힌 것만 알린다."""
+    watches = load_wallet_watch()
+    if not watches:
+        return
+
+    changed = False
+
+    for w in watches:
+        coin = w["coin"]
+        last = w.get("last", {})
+
+        for ex in w.get("exchanges", []):
+            info = get_currency_info(ex, coin)
+            if not info:
+                continue
+
+            now_wd = bool(info["wd"])
+            prev = last.get(ex)
+
+            # 기준값이 없으면 알람 없이 현재 상태만 기록한다 (첫 관측)
+            if prev is None:
+                last[ex] = now_wd
+                changed = True
+                continue
+
+            if prev == now_wd:
+                continue
+
+            last[ex] = now_wd
+            changed = True
+
+            kr = EX_KR[ex]
+            if now_wd:
+                fee = info.get("fee")
+                fee_line = f"출금수수료 : {fee} {coin}" if fee is not None else "출금수수료 : ❓ 미확인"
+                dep_line = "입금 : ✅ 가능" if info.get("dep") else "입금 : ⛔️ 아직 막힘"
+                text = NL.join([
+                    f"🔓 출금 풀림 [{coin}]",
+                    f"{kr} 출금이 방금 재개됐습니다",
+                    fee_line,
+                    dep_line,
+                ])
+            else:
+                text = NL.join([
+                    f"🔒 출금 중단 [{coin}]",
+                    f"{kr} 출금이 다시 막혔습니다",
+                ])
+
+            try:
+                await app.bot.send_message(chat_id=w["chat_id"], text=text)
+            except Exception as e:
+                print(f"[출금감시 전송 실패] {coin}/{ex} → {e}")
+
+        w["last"] = last
+
+    if changed:
+        save_wallet_watch(watches)
+
+
+#################################
 # 👥 사용자 목록 조회 (관리자용)
 #################################
 
@@ -1904,14 +2134,23 @@ async def alarm_loop(app):
         await asyncio.sleep(CHECK_INTERVAL)
 
 
-async def currency_refresh_loop():
-    """거래소 통화정보(입출금 상태 · 출금수수료) 주기 갱신"""
+async def currency_refresh_loop(app):
+    """거래소 통화정보(입출금 상태 · 출금수수료) 주기 갱신.
+    /open 감시가 걸려 있으면 주기를 1분으로 줄여 빨리 알아챈다."""
     while True:
-        await asyncio.sleep(CURRENCY_REFRESH_SEC)
+        interval = WALLET_WATCH_REFRESH_SEC if load_wallet_watch() else CURRENCY_REFRESH_SEC
+        await asyncio.sleep(interval)
+
         try:
             await asyncio.to_thread(refresh_currency_cache)
         except Exception as e:
             print(f"[통화정보 갱신 루프 오류] {e}")
+            continue
+
+        try:
+            await check_wallet_watch(app)
+        except Exception as e:
+            print(f"[출금감시 오류] {e}")
 
 
 async def gap_auto_loop():
@@ -1983,6 +2222,7 @@ def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
+    app.add_handler(CommandHandler("open", open_cmd))
 
     bg_tasks = []
 
@@ -1993,7 +2233,13 @@ def main():
 
         bg_tasks.append(asyncio.create_task(alarm_loop(app), name="alarm_loop"))
         bg_tasks.append(asyncio.create_task(gap_auto_loop(), name="gap_auto_loop"))
-        bg_tasks.append(asyncio.create_task(currency_refresh_loop(), name="currency_refresh_loop"))
+        bg_tasks.append(asyncio.create_task(currency_refresh_loop(app), name="currency_refresh_loop"))
+
+        # 봇이 꺼져 있는 동안 바뀐 출금 상태를 기동 직후 한 번 확인한다
+        try:
+            await check_wallet_watch(app)
+        except Exception as e:
+            print(f"[출금감시 초기확인 오류] {e}")
 
     async def stop(app):
         # 컨테이너 종료 시 무한루프 3개를 명시적으로 정리한다.
