@@ -565,7 +565,7 @@ ALERT_STATE = {}
 
 CURRENCY_CACHE = {}
 CURRENCY_REFRESH_SEC = 600       # 평소 10분
-WALLET_WATCH_REFRESH_SEC = 60    # /open 감시가 걸려 있으면 1분
+WALLET_WATCH_REFRESH_SEC = 15    # /open 감시가 걸려 있으면 15초
 
 
 def fetch_coinone_currencies():
@@ -1809,6 +1809,64 @@ OPEN_USAGE = """📌 /open 사용법 (출금 막힌 코인이 풀리면 알람)
 /open off         ← 전부 해제"""
 
 
+def get_usdt_krw():
+    """업비트 USDT 마켓 기준 환율. 실패하면 None"""
+    try:
+        r = _SESSION.get(
+            "https://api.upbit.com/v1/ticker",
+            params={"markets": "KRW-USDT"},
+            timeout=3
+        )
+        v = float(r.json()[0]["trade_price"])
+        return v if v > 0 else None
+    except:
+        return None
+
+
+def get_overseas_krw(coin):
+    """바이낸스 USDT 가격을 원화로 환산. 실패하면 (None, None)"""
+    try:
+        r = _SESSION.get(
+            "https://api.binance.com/api/v3/ticker/price",
+            params={"symbol": f"{coin}USDT"},
+            timeout=3
+        )
+        d = r.json()
+        usdt = float(d["price"])
+        if usdt <= 0:
+            return None, None
+    except:
+        return None, None
+
+    rate = get_usdt_krw()
+    if not rate:
+        return None, None
+
+    return usdt * rate, rate
+
+
+def build_gap_lines(coin, exchange):
+    """출금 풀린 거래소의 국내가와 해외가를 비교한 줄들.
+    조회에 실패하면 빈 리스트를 돌려 알람 본문만 나가게 한다."""
+    try:
+        kr_price = get_price(exchange, coin)
+    except:
+        kr_price = None
+
+    ov_price, _ = get_overseas_krw(coin)
+
+    if not kr_price or not ov_price:
+        return []
+
+    gap = (kr_price - ov_price) / ov_price * 100
+    return [
+        "",
+        f"{EX_KR[exchange]} : {fmt(kr_price)}원",
+        f"바이낸스 : {fmt(ov_price)}원",
+        f"괴리 : {gap:+.2f}% (국내 기준)",
+    ]
+
+
 def wd_text(ok):
     return "✅ 출금 가능" if ok else "⛔️ 출금 막힘"
 
@@ -1984,12 +2042,17 @@ async def check_wallet_watch(app):
                 fee = info.get("fee")
                 fee_line = f"출금수수료 : {fee} {coin}" if fee is not None else "출금수수료 : ❓ 미확인"
                 dep_line = "입금 : ✅ 가능" if info.get("dep") else "입금 : ⛔️ 아직 막힘"
-                text = NL.join([
+                rows = [
                     f"🔓 출금 풀림 [{coin}]",
                     f"{kr} 출금이 방금 재개됐습니다",
                     fee_line,
                     dep_line,
-                ])
+                ]
+                try:
+                    rows += await asyncio.to_thread(build_gap_lines, coin, ex)
+                except Exception as e:
+                    print(f"[출금감시 괴리조회 실패] {coin}/{ex} → {e}")
+                text = NL.join(rows)
             else:
                 text = NL.join([
                     f"🔒 출금 중단 [{coin}]",
