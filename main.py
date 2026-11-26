@@ -7,6 +7,7 @@ import uuid
 import time as _time
 from datetime import datetime, timedelta, timezone
 from telegram import Update
+from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 #################################
@@ -27,6 +28,9 @@ NIGHT_FILE = "/app/data/night_mode.json"
 GAP_AUTO_FILE = "/app/data/gap_auto.json"
 ALL_FILE = "/app/data/all_alarms.json"
 WALLET_FILE = "/app/data/wallet_watch.json"
+GXA_FILE = "/app/data/gxa_subscriptions.json"
+GXA_GROUP = "GXACommunity"
+GXA_INTERVAL = 15
 
 CHECK_INTERVAL = 5
 COOLDOWN_SEC = 300  # 5분 쿨다운
@@ -1164,7 +1168,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/gap on 1 30  ← 1% 이상, 30분마다 자동 알람\n"
         "/gap on 1     ← 분 생략시 기본 30분\n"
         "/gap off      ← 자동 알람 중단\n"
-        "/status ETH   ← 현재가 및 괴리율 조회"
+        "/status ETH   ← 현재가 및 괴리율 조회\n"
+        "/gxa on | off | status  ← GXA 새 고정 공지 알림"
     )
 
 async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2259,6 +2264,99 @@ _APP = None
 # main
 #################################
 
+async def gxa_cmd(update, context):
+    chat = update.effective_chat
+    if chat.type != "private":
+        await update.message.reply_text("봇과의 1:1 대화에서 /gxa on 을 보내주세요.")
+        return
+    key = str(chat.id)
+    subscriptions = _load_json(GXA_FILE, {})
+    action = " ".join(context.args).lower() or "status"
+    if action == "off":
+        subscriptions.pop(key, None)
+        _save_json(GXA_FILE, subscriptions)
+        reply = "GXA 공지 알림을 껐어요."
+    elif action == "on" and key not in subscriptions:
+        try:
+            group = await context.bot.get_chat("@" + GXA_GROUP)
+        except TelegramError:
+            await update.message.reply_text("GXA 방을 조회하지 못했어요. 잠시 후 /gxa on 으로 다시 시도해 주세요.")
+            return
+        pin = group.pinned_message
+        subscriptions = _load_json(GXA_FILE, {})
+        subscriptions[key] = {"latest": pin.message_id if pin else 0, "pending": []}
+        _save_json(GXA_FILE, subscriptions)
+        reply = "🔔 GXA 새 고정 공지 알림을 켰어요. 끄려면 /gxa off"
+        if pin:
+            reply += f"\n현재 고정 공지: https://t.me/{GXA_GROUP}/{pin.message_id}"
+    elif action in ("on", "status"):
+        reply = "🔔 GXA 공지 알림이 켜져 있어요. /gxa off 로 끌 수 있어요." if key in subscriptions else "GXA 공지 알림이 꺼져 있어요. /gxa on 으로 켜세요."
+    else:
+        reply = "사용법: /gxa on · /gxa off · /gxa status"
+    await update.message.reply_text(reply)
+
+
+async def check_gxa(app):
+    if not _load_json(GXA_FILE, {}):
+        return
+    group = await app.bot.get_chat("@" + GXA_GROUP)
+    pin = group.pinned_message
+    subscriptions = _load_json(GXA_FILE, {})
+    changed = False
+    for subscription in subscriptions.values():
+        if pin and pin.message_id > subscription["latest"]:
+            preview = (pin.text or pin.caption or "새 고정 공지가 올라왔어요.").strip()[:900]
+            text = f"🔔 GXA 새 공지\n{preview}\nhttps://t.me/{GXA_GROUP}/{pin.message_id}"
+            subscription["pending"].append(text)
+            subscription["latest"] = pin.message_id
+            changed = True
+    if changed:
+        _save_json(GXA_FILE, subscriptions)
+
+    for key, subscription in subscriptions.items():
+        for message in subscription["pending"]:
+            # 발송 중 다른 구독자가 명령을 실행할 수 있어 매번 최신 상태를 사용한다.
+            current = _load_json(GXA_FILE, {})
+            if not current.get(key, {}).get("pending") or current[key]["pending"][0] != message:
+                break
+            try:
+                await app.bot.send_message(chat_id=int(key), text=message,
+                                           disable_notification=False, disable_web_page_preview=True)
+            except Forbidden:
+                current = _load_json(GXA_FILE, {})
+                current.pop(key, None)
+                _save_json(GXA_FILE, current)
+                break
+            except RetryAfter:
+                raise
+            except TelegramError as error:
+                print(f"[GXA 공지] 발송 재시도 예정: {type(error).__name__}")
+                break
+            current = _load_json(GXA_FILE, {})
+            pending = current.get(key, {}).get("pending", [])
+            if pending and pending[0] == message:
+                pending.pop(0)
+                _save_json(GXA_FILE, current)
+
+
+async def gxa_loop(app):
+    try:
+        group = await app.bot.get_chat("@" + GXA_GROUP)
+        pin = group.pinned_message
+        print(f"[GXA 공지] @{GXA_GROUP} 연결 완료, 현재 고정 글: {pin.message_id if pin else '없음'}", flush=True)
+    except TelegramError as error:
+        print(f"[GXA 공지] 시작 시 조회 실패: {type(error).__name__}", flush=True)
+    while True:
+        delay = GXA_INTERVAL
+        try:
+            await check_gxa(app)
+        except RetryAfter as error:
+            delay = max(delay, error.retry_after + 1)
+        except Exception as error:
+            print(f"[GXA 공지] 조회 재시도 예정: {type(error).__name__}")
+        await asyncio.sleep(delay)
+
+
 def main():
     global _APP
 
@@ -2286,6 +2384,7 @@ def main():
     app.add_handler(CommandHandler("users", users_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
     app.add_handler(CommandHandler("open", open_cmd))
+    app.add_handler(CommandHandler("gxa", gxa_cmd))
 
     bg_tasks = []
 
@@ -2297,6 +2396,7 @@ def main():
         bg_tasks.append(asyncio.create_task(alarm_loop(app), name="alarm_loop"))
         bg_tasks.append(asyncio.create_task(gap_auto_loop(), name="gap_auto_loop"))
         bg_tasks.append(asyncio.create_task(currency_refresh_loop(app), name="currency_refresh_loop"))
+        bg_tasks.append(asyncio.create_task(gxa_loop(app), name="gxa_loop"))
 
         # 봇이 꺼져 있는 동안 바뀐 출금 상태를 기동 직후 한 번 확인한다
         try:
@@ -2305,7 +2405,7 @@ def main():
             print(f"[출금감시 초기확인 오류] {e}")
 
     async def stop(app):
-        # 컨테이너 종료 시 무한루프 3개를 명시적으로 정리한다.
+        # 컨테이너 종료 시 백그라운드 루프를 정리한다.
         # 안 하면 "Task was destroyed but it is pending!" 경고가 뜨고,
         # 파일 저장 중이던 루프가 중간에 끊길 수 있다.
         for t in bg_tasks:
