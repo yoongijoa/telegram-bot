@@ -569,127 +569,120 @@ ALERT_STATE = {}
 #################################
 
 CURRENCY_CACHE = {}
+CURRENCY_ISSUES = {}
 CURRENCY_REFRESH_SEC = 600       # 평소 10분
 WALLET_WATCH_REFRESH_SEC = 15    # /open 감시가 걸려 있으면 15초
 
 
 def fetch_coinone_currencies():
-    try:
-        r = _SESSION.get(
-            "https://api.coinone.co.kr/public/v2/currencies",
-            timeout=5
-        )
-        data = r.json()
-        if data.get("result") != "success":
-            return {}
-
-        out = {}
-        for c in data.get("currencies", []):
-            sym = (c.get("symbol") or "").upper()
-            if not sym:
-                continue
-            try:
-                fee = float(c.get("withdrawal_fee"))
-            except (TypeError, ValueError):
-                fee = None
-            out[sym] = {
-                "dep": c.get("deposit_status") == "normal",
-                "wd": c.get("withdraw_status") == "normal",
-                "fee": fee,
-            }
-        return out
-    except:
+    r = _SESSION.get(
+        "https://api.coinone.co.kr/public/v2/currencies",
+        timeout=(5, 10)
+    )
+    r.raise_for_status()
+    data = r.json()
+    if data.get("result") != "success":
         return {}
+
+    out = {}
+    for c in data.get("currencies", []):
+        sym = (c.get("symbol") or "").upper()
+        if not sym:
+            continue
+        try:
+            fee = float(c.get("withdrawal_fee"))
+        except (TypeError, ValueError):
+            fee = None
+        out[sym] = {
+            "dep": c.get("deposit_status") == "normal",
+            "wd": c.get("withdraw_status") == "normal",
+            "fee": fee,
+        }
+    return out
 
 
 def fetch_korbit_currencies():
-    try:
-        r = _SESSION.get(
-            "https://api.korbit.co.kr/v2/currencies",
-            timeout=5
-        )
-        data = r.json()
-        if not data.get("success"):
-            return {}
-
-        out = {}
-        for c in data.get("data", []):
-            sym = (c.get("name") or "").upper()
-            if not sym:
-                continue
-            try:
-                fee = float(c.get("withdrawalTxFee"))
-            except (TypeError, ValueError):
-                fee = None
-            out[sym] = {
-                "dep": c.get("depositStatus") == "launched",
-                "wd": c.get("withdrawalStatus") == "launched",
-                "fee": fee,
-            }
-        return out
-    except:
+    r = _SESSION.get(
+        "https://api.korbit.co.kr/v2/currencies",
+        timeout=(5, 10)
+    )
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("success"):
         return {}
+
+    out = {}
+    for c in data.get("data", []):
+        sym = (c.get("name") or "").upper()
+        if not sym:
+            continue
+        try:
+            fee = float(c.get("withdrawalTxFee"))
+        except (TypeError, ValueError):
+            fee = None
+        out[sym] = {
+            "dep": c.get("depositStatus") == "launched",
+            "wd": c.get("withdrawalStatus") == "launched",
+            "fee": fee,
+        }
+    return out
 
 
 def fetch_upbit_currencies():
     """업비트는 출금수수료 공개 API가 없어 입출금 상태만 채운다 (수수료는 기존 테이블 사용)"""
-    try:
-        payload = {
-            "access_key": UPBIT_ACCESS,
-            "nonce": str(uuid.uuid4())
+    payload = {
+        "access_key": UPBIT_ACCESS,
+        "nonce": str(uuid.uuid4())
+    }
+    token = jwt.encode(payload, UPBIT_SECRET, algorithm="HS256")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = _SESSION.get(
+        "https://api.upbit.com/v1/status/wallet",
+        headers=headers,
+        proxies=PROXIES,
+        timeout=(5, 10)
+    )
+
+    out = {}
+    r.raise_for_status()
+    for item in r.json():
+        sym = item.get("currency")
+        state = item.get("wallet_state")
+        if not sym:
+            continue
+        out[sym.upper()] = {
+            "dep": state in ("working", "deposit_only"),
+            "wd": state in ("working", "withdraw_only"),
+            "fee": UPBIT_WITHDRAW_FEE.get(sym.upper()),
         }
-        token = jwt.encode(payload, UPBIT_SECRET, algorithm="HS256")
-        headers = {"Authorization": f"Bearer {token}"}
-
-        r = _SESSION.get(
-            "https://api.upbit.com/v1/status/wallet",
-            headers=headers,
-            proxies=PROXIES,
-            timeout=5
-        )
-
-        out = {}
-        for item in r.json():
-            sym = item.get("currency")
-            state = item.get("wallet_state")
-            if not sym:
-                continue
-            out[sym.upper()] = {
-                "dep": state in ("working", "deposit_only"),
-                "wd": state in ("working", "withdraw_only"),
-                "fee": UPBIT_WITHDRAW_FEE.get(sym.upper()),
-            }
-        return out
-    except:
-        return {}
+    return out
 
 
 def fetch_bithumb_currencies():
     """빗썸도 출금수수료 공개 API가 없어 입출금 상태만 채운다 (수수료는 기존 테이블 사용)"""
-    try:
-        r = _SESSION.get(
-            "https://api.bithumb.com/public/assetsstatus/ALL",
-            timeout=5
-        )
-        data = r.json()
-        if data.get("status") != "0000":
-            return {}
-
-        out = {}
-        for sym, v in data.get("data", {}).items():
-            try:
-                dep = int(v["deposit_status"])
-                wd = int(v["withdrawal_status"])
-            except:
-                continue
-            out[sym.upper()] = {
-                "dep": dep == 1,
-                "wd": wd == 1,
-                "fee": BITHUMB_WITHDRAW_FEE.get(sym.upper()),
-            }
-        return out
-    except:
+    r = _SESSION.get(
+        "https://api.bithumb.com/public/assetsstatus/ALL",
+        timeout=(5, 10)
+    )
+    r.raise_for_status()
+    data = r.json()
+    if data.get("status") != "0000":
         return {}
+
+    out = {}
+    for sym, v in data.get("data", {}).items():
+        try:
+            dep = int(v["deposit_status"])
+            wd = int(v["withdrawal_status"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out[sym.upper()] = {
+            "dep": dep == 1,
+            "wd": wd == 1,
+            "fee": BITHUMB_WITHDRAW_FEE.get(sym.upper()),
+        }
+    return out
 
 
 CURRENCY_FETCHERS = {
@@ -700,18 +693,45 @@ CURRENCY_FETCHERS = {
 }
 
 
+def fetch_currency_snapshot(fetcher):
+    """일시적인 통신 오류만 한 번 더 시도한다. 인증 요청은 새 nonce로 서명한다."""
+    try:
+        return fetcher()
+    except requests.exceptions.SSLError:
+        raise
+    except (requests.Timeout, requests.ConnectionError):
+        pass
+    except requests.HTTPError as error:
+        if error.response.status_code not in (502, 503, 504) or "Retry-After" in error.response.headers:
+            raise
+    _time.sleep(1)
+    return fetcher()
+
+
 def refresh_currency_cache():
-    """거래소별 통화정보 갱신. 실패한 거래소는 직전 캐시를 그대로 유지한다."""
+    """마지막 정상 데이터를 보존하고, 장애와 복구를 상태가 바뀔 때 기록한다."""
     for ex, fetcher in CURRENCY_FETCHERS.items():
-        try:
-            data = fetcher()
-        except Exception as e:
-            print(f"[통화정보 조회 오류] {ex} → {e}")
+        if ex == "upbit" and not (UPBIT_ACCESS and UPBIT_SECRET):
+            if ex not in CURRENCY_ISSUES:
+                print("[통화정보 설정] upbit 입출금 조회 비활성 (API 키 미설정)")
+            CURRENCY_ISSUES[ex] = "disabled"
             continue
-        if data:
-            CURRENCY_CACHE[ex] = data
-        else:
-            print(f"[통화정보 조회 실패] {ex} (기존 캐시 유지)")
+        try:
+            data = fetch_currency_snapshot(fetcher)
+            if data:
+                CURRENCY_CACHE[ex] = data
+                if CURRENCY_ISSUES.pop(ex, None):
+                    print(f"[통화정보 복구] {ex} ({len(data)}개)")
+                continue
+            reason = "거래소 응답에 사용 가능한 통화정보 없음"
+        except requests.HTTPError as error:
+            reason = f"HTTP {error.response.status_code}"
+        except Exception as error:
+            reason = type(error).__name__
+        if CURRENCY_ISSUES.get(ex) != reason:
+            cache_state = "기존 캐시 유지" if ex in CURRENCY_CACHE else "조회된 정보 없음"
+            print(f"[통화정보 갱신 지연] {ex} {reason} ({cache_state})")
+            CURRENCY_ISSUES[ex] = reason
 
 
 def get_currency_info(exchange, coin):
