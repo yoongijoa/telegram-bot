@@ -2283,12 +2283,16 @@ async def gxa_cmd(update, context):
             await update.message.reply_text("GXA 방을 조회하지 못했어요. 잠시 후 /gxa on 으로 다시 시도해 주세요.")
             return
         pin = group.pinned_message
+        if pin is None:
+            await update.message.reply_text(
+                "GXA 방의 고정 공지를 읽지 못했어요. 아직 알림이 켜지지 않았어요."
+            )
+            return
         subscriptions = _load_json(GXA_FILE, {})
-        subscriptions[key] = {"latest": pin.message_id if pin else 0, "pending": []}
+        subscriptions[key] = {"latest": pin.message_id, "pending": []}
         _save_json(GXA_FILE, subscriptions)
         reply = "🔔 GXA 새 고정 공지 알림을 켰어요. 끄려면 /gxa off"
-        if pin:
-            reply += f"\n현재 고정 공지: https://t.me/{GXA_GROUP}/{pin.message_id}"
+        reply += f"\n현재 고정 공지: https://t.me/{GXA_GROUP}/{pin.message_id}"
     elif action in ("on", "status"):
         reply = "🔔 GXA 공지 알림이 켜져 있어요. /gxa off 로 끌 수 있어요." if key in subscriptions else "GXA 공지 알림이 꺼져 있어요. /gxa on 으로 켜세요."
     else:

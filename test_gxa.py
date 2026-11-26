@@ -66,3 +66,9 @@ class GxaAlerts(unittest.IsolatedAsyncioTestCase):
         self.bot.get_chat.assert_not_awaited()
         await main.check_gxa(self.app)
         self.bot.send_message.assert_not_awaited()
+
+    async def test_no_visible_pin_does_not_claim_subscription(self):
+        self.bot.get_chat.return_value = SimpleNamespace(pinned_message=None)
+        await self.command("on")
+        self.assertIn("고정 공지를 읽지 못", self.update.message.reply_text.await_args.args[0])
+        self.assertEqual(main._load_json(main.GXA_FILE, {}), {})
