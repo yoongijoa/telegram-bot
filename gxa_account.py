@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from telethon import TelegramClient, errors, types
+from telethon import TelegramClient, errors, events, types
 
 GROUP = "GXACommunity"
 DIRECTORY = Path("/app/data/gxa-account")
@@ -28,10 +28,10 @@ class PersonalAccount:
         self.owner_id = config["owner_id"]
         self.baseline = config["baseline"]
         self.peer = types.InputPeerChannel(config["group_id"], config["group_hash"])
-        self.client = make_client(config["api_id"], config["api_hash"], updates=False)
+        self.client = make_client(config["api_id"], config["api_hash"], monitor=True)
         self.lock = asyncio.Lock()
 
-    async def latest_pin(self):
+    async def connect(self):
         async with self.lock:
             if not self.client.is_connected():
                 await self.client.connect()
@@ -39,12 +39,52 @@ class PersonalAccount:
                 if not owner or owner.id != self.owner_id:
                     await self.client.disconnect()
                     raise RuntimeError("GXA 계정 재연결이 필요합니다.")
-            posts = await self.client.get_messages(self.peer, filter=types.InputMessagesFilterPinned(), limit=1)
-            return Pin(posts[0].id, posts[0].raw_text or "") if posts else None
+    async def pinned_posts(self):
+        await self.connect()
+        return [Pin(post.id, post.raw_text or "") async for post in self.client.iter_messages(
+            self.peer, filter=types.InputMessagesFilterPinned())]
+
+    async def listen(self, subscribed, snapshot, update):
+        queue = asyncio.Queue()
+
+        async def receive(event):
+            if event.channel_id == self.peer.channel_id and subscribed():
+                queue.put_nowait(event)
+
+        async def consume():
+            if subscribed():
+                snapshot(await self.pinned_posts())
+            print("[GXA 공지] 고정 이벤트 수신 대기", flush=True)
+            while True:
+                event = await queue.get()
+                if not subscribed():
+                    continue
+                if not event.pinned:
+                    await update([], event.messages)
+                    continue
+                posts = await self.client.get_messages(self.peer, ids=event.messages)
+                by_id = {p.id: p.raw_text or "" for p in posts if p}
+                await update([Pin(n, by_id.get(n, "")) for n in event.messages], [])
+
+        self.client.add_event_handler(receive, events.Raw(types.UpdatePinnedChannelMessages))
+        tasks = []
+        try:
+            await self.connect()
+            tasks = [asyncio.create_task(consume()), asyncio.ensure_future(self.client.run_until_disconnected())]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            self.client.remove_event_handler(receive)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self.client.disconnect()
 
 
-def make_client(api_id, api_hash, *, updates):
-    client = TelegramClient(str(SESSION), api_id, api_hash, receive_updates=updates,
+def make_client(api_id, api_hash, *, monitor=False):
+    client = TelegramClient(str(SESSION), api_id, api_hash, receive_updates=True,
+                            auto_reconnect=not monitor, sequential_updates=monitor,
                             device_model="GXA Notice Monitor (Railway)", request_retries=2,
                             connection_retries=2)
     client.session.save_entities = False
@@ -65,7 +105,7 @@ async def pair():
     api_hash = getpass.getpass("Telegram App api_hash (입력은 표시되지 않습니다): ").strip()
     if len(api_hash) != 32 or any(ch not in "0123456789abcdefABCDEF" for ch in api_hash):
         raise SystemExit("api_hash 형식을 확인한 뒤 다시 실행해 주세요.")
-    client = make_client(api_id, api_hash, updates=True)
+    client = make_client(api_id, api_hash)
     try:
         await client.connect()
         while not await client.is_user_authorized():

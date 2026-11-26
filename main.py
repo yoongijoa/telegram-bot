@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from telegram import Update
 from telegram.error import Forbidden, RetryAfter, TelegramError
 import gxa_account
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 #################################
 # 환경변수
@@ -31,7 +31,7 @@ ALL_FILE = "/app/data/all_alarms.json"
 WALLET_FILE = "/app/data/wallet_watch.json"
 GXA_FILE = "/app/data/gxa_subscriptions.json"
 GXA_GROUP = "GXACommunity"
-GXA_INTERVAL = 15
+GXA_RETRY_SECONDS = 15
 
 CHECK_INTERVAL = 5
 COOLDOWN_SEC = 300  # 5분 쿨다운
@@ -2261,6 +2261,7 @@ async def gap_auto_loop():
 #################################
 _APP = None
 _personal_reader = None
+_gxa_mail = asyncio.Event()
 
 
 def personal_account():
@@ -2280,6 +2281,7 @@ def activate_personal_account(reader):
                f"\n현재 공지: https://t.me/{GXA_GROUP}/{reader.baseline}\n끄기: /gxa off")
     subscribers[key] = {"latest": reader.baseline, "pending": [welcome]}
     _save_json(GXA_FILE, subscribers)
+    _gxa_mail.set()
     gxa_account.ACTIVATED.touch()
 
 #################################
@@ -2302,7 +2304,8 @@ async def gxa_cmd(update, context):
         try:
             reader = personal_account()
             if reader and reader.owner_id == chat.id:
-                pin = await reader.latest_pin()
+                active = [p.message_id for p in await reader.pinned_posts()]
+                pin = gxa_account.Pin(max(active), "") if active else None
             else:
                 group = await context.bot.get_chat("@" + GXA_GROUP)
                 pin = group.pinned_message
@@ -2317,6 +2320,8 @@ async def gxa_cmd(update, context):
             return
         subscriptions = _load_json(GXA_FILE, {})
         subscriptions[key] = {"latest": pin.message_id, "pending": []}
+        if reader and reader.owner_id == chat.id:
+            subscriptions[key]["pin_ids"] = active
         _save_json(GXA_FILE, subscriptions)
         reply = "🔔 GXA 새 고정 공지 알림을 켰어요. 끄려면 /gxa off"
         reply += f"\n현재 고정 공지: https://t.me/{GXA_GROUP}/{pin.message_id}"
@@ -2327,37 +2332,34 @@ async def gxa_cmd(update, context):
     await update.message.reply_text(reply)
 
 
-async def check_gxa(app):
-    reader = personal_account()
-    if reader:
-        activate_personal_account(reader)
-    keys = set(_load_json(GXA_FILE, {}))
-    if reader and str(reader.owner_id) in keys:
-        owner = str(reader.owner_id)
-        keys.remove(owner)
-        pin = await reader.latest_pin()
-        await deliver_gxa(app, {owner}, pin)
-    if keys:
-        group = await app.bot.get_chat("@" + GXA_GROUP)
-        await deliver_gxa(app, keys, group.pinned_message)
-
-
-async def deliver_gxa(app, keys, pin):
+def record_gxa_pins(keys, pins, *, removed=(), snapshot=False):
     subscriptions = _load_json(GXA_FILE, {})
     changed = False
     for key in keys.intersection(subscriptions):
         subscription = subscriptions[key]
-        if pin and pin.message_id > subscription["latest"]:
+        known = set(subscription.get("pin_ids", [subscription["latest"]]))
+        current = set() if snapshot else known.difference(removed)
+        baseline = subscription["latest"]
+        for pin in sorted(pins, key=lambda p: p.message_id):
+            current.add(pin.message_id)
+            if pin.message_id in known or (snapshot and "pin_ids" not in subscription and pin.message_id <= baseline):
+                continue
             preview = (pin.text or pin.caption or "새 고정 공지가 올라왔어요.").strip()[:900]
             text = f"🔔 GXA 새 공지\n{preview}\nhttps://t.me/{GXA_GROUP}/{pin.message_id}"
             subscription["pending"].append(text)
-            subscription["latest"] = pin.message_id
+            subscription["latest"] = max(subscription["latest"], pin.message_id)
+            changed = True
+        if current != known or "pin_ids" not in subscription:
+            subscription["pin_ids"] = sorted(current)
             changed = True
     if changed:
         _save_json(GXA_FILE, subscriptions)
+        _gxa_mail.set()
 
-    for key in keys.intersection(subscriptions):
-        subscription = subscriptions[key]
+
+async def flush_gxa(app):
+    subscriptions = _load_json(GXA_FILE, {})
+    for key, subscription in subscriptions.items():
         for message in subscription["pending"]:
             # 발송 중 다른 구독자가 명령을 실행할 수 있어 매번 최신 상태를 사용한다.
             current = _load_json(GXA_FILE, {})
@@ -2383,21 +2385,54 @@ async def deliver_gxa(app, keys, pin):
                 _save_json(GXA_FILE, current)
 
 
-async def gxa_loop(app):
-    try:
-        group = await app.bot.get_chat("@" + GXA_GROUP)
-        pin = group.pinned_message
-        print(f"[GXA 공지] @{GXA_GROUP} 연결 완료, 현재 고정 글: {pin.message_id if pin else '없음'}", flush=True)
-    except TelegramError as error:
-        print(f"[GXA 공지] 시작 시 조회 실패: {type(error).__name__}", flush=True)
+async def gxa_sender(app):
+    _gxa_mail.set()
     while True:
-        delay = GXA_INTERVAL
+        await _gxa_mail.wait()
+        _gxa_mail.clear()
+        delay = GXA_RETRY_SECONDS
         try:
-            await check_gxa(app)
+            await flush_gxa(app)
+            if not any(sub["pending"] for sub in _load_json(GXA_FILE, {}).values()):
+                continue
         except RetryAfter as error:
             delay = max(delay, error.retry_after + 1)
         except Exception as error:
             print(f"[GXA 공지] 조회 재시도 예정: {type(error).__name__}")
+        await asyncio.sleep(delay)
+        _gxa_mail.set()
+
+
+async def public_gxa_event(update, context):
+    msg = update.effective_message
+    if (msg.chat.username or "").lower() != GXA_GROUP.lower():
+        return
+    keys = set(_load_json(GXA_FILE, {}))
+    reader = personal_account()
+    if reader:
+        keys.discard(str(reader.owner_id))
+    record_gxa_pins(keys, [msg.pinned_message])
+
+
+async def gxa_loop(app):
+    while True:
+        delay = GXA_RETRY_SECONDS
+        try:
+            reader = personal_account()
+            if reader:
+                activate_personal_account(reader)
+                owner = str(reader.owner_id)
+                def subscribed():
+                    return owner in _load_json(GXA_FILE, {})
+                def snapshot(pins):
+                    record_gxa_pins({owner}, pins, snapshot=True)
+                async def update(pins, removed):
+                    record_gxa_pins({owner}, pins, removed=removed)
+                await reader.listen(subscribed, snapshot, update)
+        except gxa_account.errors.FloodWaitError as error:
+            delay = max(delay, error.seconds + 1)
+        except Exception as error:
+            print(f"[GXA 공지] 이벤트 재연결 예정: {type(error).__name__}", flush=True)
         await asyncio.sleep(delay)
 
 
@@ -2429,6 +2464,7 @@ def main():
     app.add_handler(CommandHandler("all", all_cmd))
     app.add_handler(CommandHandler("open", open_cmd))
     app.add_handler(CommandHandler("gxa", gxa_cmd))
+    app.add_handler(MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, public_gxa_event))
 
     bg_tasks = []
 
@@ -2441,6 +2477,7 @@ def main():
         bg_tasks.append(asyncio.create_task(gap_auto_loop(), name="gap_auto_loop"))
         bg_tasks.append(asyncio.create_task(currency_refresh_loop(app), name="currency_refresh_loop"))
         bg_tasks.append(asyncio.create_task(gxa_loop(app), name="gxa_loop"))
+        bg_tasks.append(asyncio.create_task(gxa_sender(app), name="gxa_sender"))
 
         # 봇이 꺼져 있는 동안 바뀐 출금 상태를 기동 직후 한 번 확인한다
         try:

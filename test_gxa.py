@@ -1,8 +1,9 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from telegram.error import NetworkError
 import main
@@ -29,16 +30,22 @@ class GxaAlerts(unittest.IsolatedAsyncioTestCase):
     async def command(self, arg):
         await main.gxa_cmd(self.update, SimpleNamespace(bot=self.bot, args=[arg]))
 
+    async def bot_event(self):
+        message = SimpleNamespace(chat=SimpleNamespace(username="GXACommunity"),
+                                  pinned_message=self.bot.get_chat.return_value.pinned_message)
+        await main.public_gxa_event(SimpleNamespace(effective_message=message), self.app)
+        await main.flush_gxa(self.app)
+
     async def test_subscribe_new_pin_once_then_turn_off(self):
         self.pin(100)
         await self.command("on")
-        await main.check_gxa(self.app)
+        await self.bot_event()
         self.bot.send_message.assert_not_awaited()
         self.pin(101)
-        await main.check_gxa(self.app)
-        await main.check_gxa(self.app)
+        await self.bot_event()
+        await self.bot_event()
         self.pin(100)
-        await main.check_gxa(self.app)
+        await self.bot_event()
         self.bot.send_message.assert_awaited_once()
         sent = self.bot.send_message.await_args.kwargs
         self.assertEqual(sent["chat_id"], 17)
@@ -46,7 +53,7 @@ class GxaAlerts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://t.me/GXACommunity/101", sent["text"])
         await self.command("off")
         self.pin(103)
-        await main.check_gxa(self.app)
+        await self.bot_event()
         self.bot.send_message.assert_awaited_once()
 
     async def test_failed_delivery_retried_before_next_pin(self):
@@ -54,9 +61,9 @@ class GxaAlerts(unittest.IsolatedAsyncioTestCase):
         await self.command("on")
         self.pin(101)
         self.bot.send_message.side_effect = [NetworkError("offline"), None, None]
-        await main.check_gxa(self.app)
+        await self.bot_event()
         self.pin(102)
-        await main.check_gxa(self.app)
+        await self.bot_event()
         calls = self.bot.send_message.await_args_list
         self.assertEqual([c.kwargs["text"].split("/")[-1] for c in calls], ["101", "101", "102"])
 
@@ -64,7 +71,7 @@ class GxaAlerts(unittest.IsolatedAsyncioTestCase):
         self.update.effective_chat.type = "supergroup"
         await self.command("on")
         self.bot.get_chat.assert_not_awaited()
-        await main.check_gxa(self.app)
+        await self.bot_event()
         self.bot.send_message.assert_not_awaited()
 
     async def test_no_visible_pin_does_not_claim_subscription(self):
@@ -74,14 +81,21 @@ class GxaAlerts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(main._load_json(main.GXA_FILE, {}), {})
 
     async def test_personal_pin_goes_only_to_connected_owner(self):
-        self.assertTrue(hasattr(main, "personal_account"))
-        reader = SimpleNamespace(owner_id=17, latest_pin=AsyncMock(return_value=
-            SimpleNamespace(message_id=42, text="새 공지", caption=None)))
+        reader = SimpleNamespace(owner_id=17)
+        async def listen(subscribed, snapshot, update):
+            self.assertTrue(subscribed())
+            snapshot([main.gxa_account.Pin(41, "")])
+            await update([main.gxa_account.Pin(42, "새 공지")], [])
+            raise asyncio.CancelledError()
+        reader.listen = listen
         main._save_json(main.GXA_FILE, {"17": {"latest": 41, "pending": []},
                                         "18": {"latest": 41, "pending": []}})
         self.pin(41)
         with patch.object(main, "personal_account", return_value=reader), patch.object(main, "activate_personal_account"):
-            await main.check_gxa(self.app)
+            with self.assertRaises(asyncio.CancelledError):
+                await main.gxa_loop(self.app)
+        await main.flush_gxa(self.app)
+        self.bot.get_chat.assert_not_awaited()
         self.bot.send_message.assert_awaited_once()
         self.assertEqual(self.bot.send_message.await_args.kwargs["chat_id"], 17)
 
@@ -97,3 +111,48 @@ class GxaAlerts(unittest.IsolatedAsyncioTestCase):
             await self.command("off")
             main.activate_personal_account(reader)
             self.assertEqual(main._load_json(main.GXA_FILE, {}), {})
+
+    def test_events_deduplicate_and_allow_old_posts_to_be_pinned_again(self):
+        main._save_json(main.GXA_FILE, {"17": {"latest": 100, "pending": []}})
+        def pin(number):
+            return main.gxa_account.Pin(number, "공지")
+        main.record_gxa_pins({"17"}, [pin(90), pin(100)], snapshot=True)
+        main.record_gxa_pins({"17"}, [pin(80), pin(101)])
+        main.record_gxa_pins({"17"}, [pin(80)])
+        main.record_gxa_pins({"17"}, [], removed=[80])
+        main.record_gxa_pins({"17"}, [pin(80)])
+        main.record_gxa_pins({"17"}, [pin(80), pin(90), pin(100), pin(101), pin(102)], snapshot=True)
+        state = main._load_json(main.GXA_FILE, {})["17"]
+        self.assertEqual([m.split("/")[-1] for m in state["pending"]], ["80", "101", "80", "102"])
+
+    async def test_listener_handles_only_target_events_without_idle_queries(self):
+        from telethon import types
+        reader = object.__new__(main.gxa_account.PersonalAccount)
+        reader.peer = types.InputPeerChannel(700, 42)
+        reader.connect = AsyncMock()
+        reader.pinned_posts = AsyncMock(return_value=[])
+        connected = asyncio.Event()
+        delivered = asyncio.Event()
+        disconnected = asyncio.Event()
+        reader.client = Mock(get_messages=AsyncMock(return_value=[SimpleNamespace(id=7, raw_text="공지")]),
+                             disconnect=AsyncMock(), run_until_disconnected=disconnected.wait)
+        async def update(pins, removed):
+            if pins:
+                self.assertEqual(pins[0].message_id, 7)
+                delivered.set()
+        listener = asyncio.create_task(reader.listen(lambda: True, lambda _: connected.set(), update))
+        try:
+            await asyncio.wait_for(connected.wait(), 2)
+            receive, event_filter = reader.client.add_event_handler.call_args.args
+            self.assertIs(event_filter.types, types.UpdatePinnedChannelMessages)
+            await receive(types.UpdatePinnedChannelMessages(555, [99], 1, 1, pinned=True))
+            await receive(types.UpdatePinnedChannelMessages(700, [99], 2, 1, pinned=False))
+            await asyncio.sleep(0)
+            reader.client.get_messages.assert_not_awaited()
+            await receive(types.UpdatePinnedChannelMessages(700, [7], 3, 1, pinned=True))
+            await asyncio.wait_for(delivered.wait(), 2)
+            reader.client.get_messages.assert_awaited_once_with(reader.peer, ids=[7])
+            reader.pinned_posts.assert_awaited_once()
+        finally:
+            disconnected.set()
+            await asyncio.wait_for(listener, 2)
