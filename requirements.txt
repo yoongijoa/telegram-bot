@@ -1,4 +1,6 @@
 python-telegram-bot[job-queue]==20.7
 requests
 PyJWT
+Telethon==1.46.0
+qrcode==8.2
 

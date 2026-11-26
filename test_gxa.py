@@ -72,3 +72,28 @@ class GxaAlerts(unittest.IsolatedAsyncioTestCase):
         await self.command("on")
         self.assertIn("고정 공지를 읽지 못", self.update.message.reply_text.await_args.args[0])
         self.assertEqual(main._load_json(main.GXA_FILE, {}), {})
+
+    async def test_personal_pin_goes_only_to_connected_owner(self):
+        self.assertTrue(hasattr(main, "personal_account"))
+        reader = SimpleNamespace(owner_id=17, latest_pin=AsyncMock(return_value=
+            SimpleNamespace(message_id=42, text="새 공지", caption=None)))
+        main._save_json(main.GXA_FILE, {"17": {"latest": 41, "pending": []},
+                                        "18": {"latest": 41, "pending": []}})
+        self.pin(41)
+        with patch.object(main, "personal_account", return_value=reader), patch.object(main, "activate_personal_account"):
+            await main.check_gxa(self.app)
+        self.bot.send_message.assert_awaited_once()
+        self.assertEqual(self.bot.send_message.await_args.kwargs["chat_id"], 17)
+
+    async def test_pair_activates_own_chat_once_and_preserves_off(self):
+        reader = SimpleNamespace(owner_id=17, baseline=42)
+        marker = Path(main.GXA_FILE).with_name("activated")
+        with patch.object(main.gxa_account, "ACTIVATED", marker):
+            main.activate_personal_account(reader)
+            subscriptions = main._load_json(main.GXA_FILE, {})
+            self.assertEqual(set(subscriptions), {"17"})
+            self.assertEqual(subscriptions["17"]["latest"], 42)
+            self.assertIn("GXACommunity/42", subscriptions["17"]["pending"][0])
+            await self.command("off")
+            main.activate_personal_account(reader)
+            self.assertEqual(main._load_json(main.GXA_FILE, {}), {})
