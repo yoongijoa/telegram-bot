@@ -7,9 +7,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from telethon import TelegramClient, errors, events, types
+from telethon import TelegramClient, errors, events, functions, types
 
 GROUP = "GXACommunity"
+PIN_CHECK_SECONDS = 60
 DIRECTORY = Path("/app/data/gxa-account")
 CONFIG = DIRECTORY / "account.json"
 SESSION = DIRECTORY / "reader.session"
@@ -44,33 +45,86 @@ class PersonalAccount:
         return [Pin(post.id, post.raw_text or "") async for post in self.client.iter_messages(
             self.peer, filter=types.InputMessagesFilterPinned())]
 
+    async def pin_marker(self):
+        result = await self.client(functions.messages.SearchRequest(
+            peer=self.peer, q="", filter=types.InputMessagesFilterPinned(),
+            min_date=None, max_date=None, offset_id=0, add_offset=0,
+            limit=1, max_id=0, min_id=0, hash=0))
+        # pts changes even if an older pin replaces another and the count stays the same.
+        pts = getattr(result, "pts", None)
+        if pts is not None:
+            return (pts, result.count, result.messages[0].id if result.messages else None)
+        return None
+
     async def listen(self, subscribed, snapshot, update):
         queue = asyncio.Queue()
+        generation = 0
 
         async def receive(event):
-            if event.channel_id == self.peer.channel_id and subscribed():
-                queue.put_nowait(event)
+            nonlocal generation
+            if isinstance(event, types.UpdatePinnedChannelMessages):
+                if event.channel_id != self.peer.channel_id:
+                    return
+                pinned, ids = event.pinned, event.messages
+            else:
+                msg = event.message
+                if (not isinstance(msg, types.MessageService) or
+                        not isinstance(msg.action, types.MessageActionPinMessage) or
+                        getattr(msg.peer_id, "channel_id", None) != self.peer.channel_id or
+                        not msg.reply_to or not msg.reply_to.reply_to_msg_id):
+                    return
+                pinned, ids = True, [msg.reply_to.reply_to_msg_id]
+            if subscribed():
+                generation += 1
+                queue.put_nowait((pinned, ids))
 
         async def consume():
-            if subscribed():
-                snapshot(await self.pinned_posts())
-            print("[GXA 공지] 고정 이벤트 수신 대기", flush=True)
+            print("[GXA 공지] 고정 이벤트와 고정 안내 메시지 수신 대기", flush=True)
             while True:
-                event = await queue.get()
+                pinned, ids = await queue.get()
                 if not subscribed():
                     continue
-                if not event.pinned:
-                    await update([], event.messages)
+                if not pinned:
+                    await update([], ids)
                     continue
-                posts = await self.client.get_messages(self.peer, ids=event.messages)
+                posts = await self.client.get_messages(self.peer, ids=ids)
                 by_id = {p.id: p.raw_text or "" for p in posts if p}
-                await update([Pin(n, by_id.get(n, "")) for n in event.messages], [])
+                await update([Pin(n, by_id.get(n, "")) for n in ids], [])
 
-        self.client.add_event_handler(receive, events.Raw(types.UpdatePinnedChannelMessages))
+        async def reconcile():
+            previous = None
+            successful_checks = 0
+            while True:
+                delay = PIN_CHECK_SECONDS
+                if subscribed():
+                    try:
+                        before = generation
+                        marker = await self.pin_marker()
+                        if marker is None or marker != previous:
+                            posts = await self.pinned_posts()
+                            if generation == before and subscribed():
+                                snapshot(posts)
+                                previous = marker
+                        if successful_checks == 0:
+                            print(f"[GXA 공지] 고정 목록 점검 시작 · {PIN_CHECK_SECONDS}초 간격", flush=True)
+                        elif successful_checks == 1:
+                            print("[GXA 공지] 자동 누락 점검 정상", flush=True)
+                        successful_checks += 1
+                    except errors.FloodWaitError as error:
+                        delay = max(delay, error.seconds + 1)
+                        print(f"[GXA 공지] 고정 목록 확인 제한 · {delay}초 뒤 재시도", flush=True)
+                    except Exception as error:
+                        print(f"[GXA 공지] 고정 목록 확인 재시도 · {type(error).__name__}", flush=True)
+                else:
+                    previous = None
+                await asyncio.sleep(delay)
+
+        self.client.add_event_handler(receive, events.Raw((types.UpdatePinnedChannelMessages, types.UpdateNewChannelMessage)))
         tasks = []
         try:
             await self.connect()
-            tasks = [asyncio.create_task(consume()), asyncio.ensure_future(self.client.run_until_disconnected())]
+            tasks = [asyncio.create_task(consume()), asyncio.create_task(reconcile()),
+                     asyncio.ensure_future(self.client.run_until_disconnected())]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()

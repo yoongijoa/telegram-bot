@@ -2355,26 +2355,35 @@ async def gxa_cmd(update, context):
 def record_gxa_pins(keys, pins, *, removed=(), snapshot=False):
     subscriptions = _load_json(GXA_FILE, {})
     changed = False
+    added = set()
     for key in keys.intersection(subscriptions):
         subscription = subscriptions[key]
         known = set(subscription.get("pin_ids", [subscription["latest"]]))
         current = set() if snapshot else known.difference(removed)
-        baseline = subscription["latest"]
+        if "pin_ids" not in subscription:
+            subscription["initial_latest"] = subscription["latest"]
+        baseline = subscription.get("initial_latest", 0)
         for pin in sorted(pins, key=lambda p: p.message_id):
             current.add(pin.message_id)
-            if pin.message_id in known or (snapshot and "pin_ids" not in subscription and pin.message_id <= baseline):
+            if pin.message_id in known or (snapshot and pin.message_id <= baseline):
                 continue
             preview = (pin.text or pin.caption or "새 고정 공지가 올라왔어요.").strip()[:900]
             text = f"🔔 GXA 새 공지\n{preview}\nhttps://t.me/{GXA_GROUP}/{pin.message_id}"
             subscription["pending"].append(text)
+            added.add(pin.message_id)
             subscription["latest"] = max(subscription["latest"], pin.message_id)
             changed = True
         if current != known or "pin_ids" not in subscription:
             subscription["pin_ids"] = sorted(current)
             changed = True
+        if snapshot and subscription.pop("initial_latest", None) is not None:
+            changed = True
     if changed:
         _save_json(GXA_FILE, subscriptions)
         _gxa_mail.set()
+        if added:
+            source = "고정 목록 대조" if snapshot else "실시간"
+            print(f"[GXA 공지] {source} 감지 · 글 {sorted(added)}", flush=True)
 
 
 async def flush_gxa(app):
@@ -2403,6 +2412,8 @@ async def flush_gxa(app):
             if pending and pending[0] == message:
                 pending.pop(0)
                 _save_json(GXA_FILE, current)
+                if message.startswith("🔔 GXA 새 공지"):
+                    print(f"[GXA 공지] 발송 완료 · 글 {message.rsplit('/', 1)[-1]}", flush=True)
 
 
 async def gxa_sender(app):
